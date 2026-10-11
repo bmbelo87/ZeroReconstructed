@@ -5,10 +5,11 @@
  * VERSIONINFO e sem assinatura são marcados com mais frequência por detecções
  * heurísticas/ML dos antivírus. */
 #include <winver.h>
+#include "recomp_version.h"   /* RECOMP_VERSION / RECOMP_VERSION_RC (gerado a cada build) */
 
 1 VERSIONINFO
-FILEVERSION     0,2,0,0
-PRODUCTVERSION  0,2,0,0
+FILEVERSION     RECOMP_VERSION_RC
+PRODUCTVERSION  RECOMP_VERSION_RC
 FILEFLAGSMASK   0x3fL
 FILEFLAGS       0x0L
 FILEOS          VOS_NT_WINDOWS32
@@ -21,12 +22,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "decomp-it-up (github.com/bmbelo87)"
             VALUE "FileDescription",  "decomp-it-up-Zero - Pump It Up: Zero reconstruction"
-            VALUE "FileVersion",      "0.2.0.0"
+            VALUE "FileVersion",      RECOMP_VERSION
             VALUE "InternalName",     "Pumpy"
             VALUE "LegalCopyright",   "Open source reconstruction for educational purposes. Not affiliated with Andamiro Co., Ltd."
             VALUE "OriginalFilename", "Pumpy.exe"
             VALUE "ProductName",      "decomp-it-up-Zero"
-            VALUE "ProductVersion",   "0.2.0.0"
+            VALUE "ProductVersion",   RECOMP_VERSION
         END
     END
     BLOCK "VarFileInfo"

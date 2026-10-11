@@ -448,6 +448,10 @@ static void zDanceGradeEnter(void)
 }
 
 static void zPlay(int k) { if (g_zSnd[k] >= 0) Audio_Play(g_zSnd[k], false); }
+/* fim do Dance Grade: aplausos/vaias (EFF_RANK_x / _B) e os demais efeitos param junto.
+ * Os 9-x.WAV duram até 8,8 s e a tela só tem ~6,6 s depois que eles começam (t=235 de
+ * 630): sem isto a multidão seguia tocando no Next Stage / Select. (Trazido da NX.) */
+static void zStopAll(void) { if (!g_zSndInit) return; for (int k = 0; k < 14; k++) if (g_zSnd[k] >= 0) Audio_Stop(g_zSnd[k]); }
 
 /* devolve true quando a tela terminou */
 static bool zDanceGradeUpdate(int t, float dt)
@@ -529,6 +533,7 @@ void Result_Enter(void) {
     if (BGM_LoadAUDDirect(ap)) BGM_Play(true);
     */
 
+    Gameplay_DoubleToOwner();   /* Double só do P2: contadores no índice do jogador (gameplay.c) */
     g_gradeP1 = calcGrade(g_game.stats.perfectCount[0], g_game.stats.greatCount[0],
                           g_game.stats.goodCount[0], g_game.stats.badCount[0],
                           g_game.stats.missCount[0], (int)g_game.stats.maxCombo[0]);
@@ -567,6 +572,7 @@ void Result_Update(float dt) {
             Movie_Close();
             GameState ns = Result_GetNextState();
             BGM_Stop();
+            zStopAll();
             Resource_ClearBGA();
             Game_ChangeState(ns);
             return;

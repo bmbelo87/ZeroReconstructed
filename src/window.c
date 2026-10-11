@@ -47,21 +47,39 @@ static void Window_UpdateViewport(void) {
     glLoadIdentity();
 }
 
-/* Tela cheia EXCLUSIVA: troca o modo de vídeo do monitor para a RESOLUTION
- * escolhida (640x480 = como o original rodava). O original abria em tela cheia
- * na resolução do jogo; o FULLSCREEN_DESKTOP (janela sem borda na resolução da
- * área de trabalho) fica só como reserva se o monitor não aceitar o modo. */
+/* Tela cheia: no modo 4:3 ou em monitores widescreen (16:9, 16:10, 21:9),
+ * FULLSCREEN_DESKTOP usa a resolucao nativa do monitor e mantem o aspecto 4:3
+ * com colunas pretas nas laterais (pillarbox), sem que o hardware do monitor estique.
+ * Em monitores CRT 4:3 nativos de arcade cab ou modo exclusivo: tenta o modo exclusivo. */
 static void Window_SetFullscreen(bool fs) {
     if (!g_win) return;
     if (!fs) { SDL_SetWindowFullscreen(g_win, 0); return; }
+
+    int disp = SDL_GetWindowDisplayIndex(g_win);
+    if (disp < 0) disp = 0;
+
+    /* Pedido do usuário: monitor widescreen nunca mostra esticado por conta própria.
+     * A imagem só estica se o ASPECT do GRAPHICS SETTINGS estiver em STRETCH
+     * (Window_UpdateViewport ocupa a tela toda nesse caso). */
+    SDL_DisplayMode dm;
+    if (SDL_GetDesktopDisplayMode(disp, &dm) == 0) {
+        /* Em telas widescreen (16:9, 16:10, 21:9) ou quando em modo 4:3 com bordas,
+         * FULLSCREEN_DESKTOP usa a resolucao nativa do monitor e permite que o
+         * Window_UpdateViewport crie as colunas pretas laterais (pillarbox) perfeitas,
+         * impedindo que o hardware do monitor estique a imagem. */
+        if (dm.w * 3 != dm.h * 4 || g_game.gfxAspect == 0) {
+            SDL_SetWindowFullscreen(g_win, SDL_WINDOW_FULLSCREEN_DESKTOP);
+            Log_Print("Window: fullscreen desktop na resolucao nativa %dx%d (pillarbox 4:3 preservado)\n",
+                      dm.w, dm.h);
+            return;
+        }
+    }
 
     int w, h;
     Window_GetResolution(g_game.gfxResIdx, &w, &h);
     SDL_DisplayMode want, got;
     memset(&want, 0, sizeof(want));
     want.w = w; want.h = h; want.refresh_rate = 60;
-    int disp = SDL_GetWindowDisplayIndex(g_win);
-    if (disp < 0) disp = 0;
     if (SDL_GetClosestDisplayMode(disp, &want, &got) &&
         SDL_SetWindowDisplayMode(g_win, &got) == 0 &&
         SDL_SetWindowFullscreen(g_win, SDL_WINDOW_FULLSCREEN) == 0) {
@@ -73,13 +91,37 @@ static void Window_SetFullscreen(bool fs) {
     SDL_SetWindowFullscreen(g_win, SDL_WINDOW_FULLSCREEN_DESKTOP);
 }
 
+/* vsync realmente em uso (trazido do NXReconstructed). O INI pede (g_game.vsync),
+ * mas o driver pode recusar ou ignorar: o laço principal precisa saber o que valeu,
+ * senão desenha sem limite.
+ * era: SDL_GL_SetSwapInterval(g_game.vsync ? 1 : 0) sem olhar o retorno. */
+static bool s_vsyncOn = false;
+static void window_applyVsync(void) {
+    int want = g_game.vsync ? 1 : 0;
+    int rc = SDL_GL_SetSwapInterval(want);
+    int got = SDL_GL_GetSwapInterval();
+    s_vsyncOn = (want == 1 && rc == 0 && got != 0);
+    if (want && !s_vsyncOn)
+        Log_Print("Window: vsync pedido mas nao aplicado (rc=%d intervalo=%d: %s); usando o limitador\n",
+                  rc, got, SDL_GetError());
+    else
+        Log_Print("Window: vsync %s (intervalo=%d)\n", s_vsyncOn ? "ativo" : "desligado", got);
+}
+bool Window_VsyncActive(void) { return s_vsyncOn; }
+/* chamado pelo laço principal quando o swap não bloqueia apesar do vsync "ativo" */
+void Window_VsyncFailed(void) {
+    if (!s_vsyncOn) return;
+    s_vsyncOn = false;
+    Log_Print("Window: vsync ativo mas o swap nao bloqueia (driver forcando desligado?); usando o limitador\n");
+}
+
 bool Window_Create(HINSTANCE hInstance, int width, int height, bool fullscreen) {
     (void)hInstance;
 
 #ifdef SDL_MAIN_HANDLED
     SDL_SetMainReady(); /* main() próprio (sem SDL2main): necessário no Windows */
 #endif
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER | SDL_INIT_JOYSTICK) != 0) {
         Log_Print("SDL: SDL_Init failed: %s\n", SDL_GetError());
         return false;
     }
@@ -122,7 +164,7 @@ bool Window_Create(HINSTANCE hInstance, int width, int height, bool fullscreen) 
         return false;
     }
     SDL_GL_MakeCurrent(g_win, g_glc);
-    SDL_GL_SetSwapInterval(g_game.vsync ? 1 : 0);
+    window_applyVsync();   /* era: SDL_GL_SetSwapInterval(g_game.vsync ? 1 : 0); */
 
     if (fullscreen)
         Window_SetFullscreen(true);
@@ -171,8 +213,94 @@ void Window_Destroy(void) {
     Log_Print("Window: destroyed\n");
 }
 
+static void Window_DrawPillarboxBars(void) {
+    if (g_game.gfxAspect == 1) return; /* STRETCH: sem bordas */
+
+    int cw = 0, ch = 0;
+    if (!g_win) return;
+    SDL_GL_GetDrawableSize(g_win, &cw, &ch);
+    if (cw <= 0 || ch <= 0) return;
+
+    int vw = cw;
+    int vh = (cw * LOGICAL_H) / LOGICAL_W;
+    if (vh > ch) {
+        vh = ch;
+        vw = (ch * LOGICAL_W) / LOGICAL_H;
+    }
+
+    int vx = (cw - vw) / 2;
+    int vy = (ch - vh) / 2;
+
+    if (vx > 0 || vy > 0) {
+        glViewport(0, 0, cw, ch);
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadIdentity();
+        glOrtho(0, cw, 0, ch, -1.0, 1.0);
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadIdentity();
+
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_BLEND);
+        glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
+
+        glBegin(GL_QUADS);
+        if (vx > 0) {
+            /* Coluna esquerda */
+            glVertex2f(0.0f, 0.0f);
+            glVertex2f((float)vx, 0.0f);
+            glVertex2f((float)vx, (float)ch);
+            glVertex2f(0.0f, (float)ch);
+            /* Coluna direita */
+            glVertex2f((float)(vx + vw), 0.0f);
+            glVertex2f((float)cw, 0.0f);
+            glVertex2f((float)cw, (float)ch);
+            glVertex2f((float)(vx + vw), (float)ch);
+        }
+        if (vy > 0) {
+            /* Barra inferior */
+            glVertex2f(0.0f, 0.0f);
+            glVertex2f((float)cw, 0.0f);
+            glVertex2f((float)cw, (float)vy);
+            glVertex2f(0.0f, (float)vy);
+            /* Barra superior */
+            glVertex2f(0.0f, (float)(vy + vh));
+            glVertex2f((float)cw, (float)(vy + vh));
+            glVertex2f((float)cw, (float)ch);
+            glVertex2f(0.0f, (float)ch);
+        }
+        glEnd();
+
+        glPopMatrix();
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+        glMatrixMode(GL_MODELVIEW);
+        glEnable(GL_TEXTURE_2D);
+        glEnable(GL_BLEND);
+        glViewport(vx, vy, vw, vh);
+    }
+}
+
 void Window_SwapBuffers(void) {
-    if (g_win) SDL_GL_SwapWindow(g_win);
+    if (g_win) {
+        Window_DrawPillarboxBars();
+        SDL_GL_SwapWindow(g_win);
+    }
+}
+
+/* Taxa do monitor (Hz) para limitar o desenho sem vsync; 60 se desconhecida. */
+int Window_GetRefreshRate(void) {
+    SDL_DisplayMode dm;
+    if (g_win && SDL_GetWindowDisplayMode(g_win, &dm) == 0 && dm.refresh_rate > 0) {
+        if (!(SDL_GetWindowFlags(g_win) & SDL_WINDOW_FULLSCREEN)) {
+            int disp = SDL_GetWindowDisplayIndex(g_win);
+            SDL_DisplayMode cur;
+            if (SDL_GetCurrentDisplayMode(disp < 0 ? 0 : disp, &cur) == 0 && cur.refresh_rate > 0) return cur.refresh_rate;
+        }
+        return dm.refresh_rate;
+    }
+    return 60;
 }
 
 /* GRAPHICS SETTINGS — resoluções 4:3 da página do Service Menu. */
@@ -194,7 +322,7 @@ void Window_ApplyGraphics(void) {
         SDL_SetWindowPosition(g_win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         g_winW = w; g_winH = h;
     }
-    SDL_GL_SetSwapInterval(g_game.vsync ? 1 : 0);
+    window_applyVsync();   /* era: SDL_GL_SetSwapInterval(g_game.vsync ? 1 : 0); */
     Window_UpdateViewport();
     Texture_ApplyFilterAll();
     Log_Print("Window: graficos fs=%d res=%d vsync=%d filtro=%d aspect=%d\n",
@@ -207,8 +335,11 @@ void Window_ToggleFullscreen(void) {
     g_game.isFullscreen = !g_game.isFullscreen;
     /* Uint32 fsflag = g_game.isFullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0;
     SDL_SetWindowFullscreen(g_win, fsflag); */
-    Window_SetFullscreen(g_game.isFullscreen);
-    Window_UpdateViewport();
+    /* era: Window_SetFullscreen(g_game.isFullscreen); Window_UpdateViewport();
+     * Agora pelo mesmo caminho do GRAPHICS SETTINGS: além do modo exclusivo, volta o
+     * tamanho da janela ao sair e reaplica o vsync (o intervalo de swap pode se perder
+     * na troca de modo de vídeo). */
+    Window_ApplyGraphics();
     Log_Print("Window: %s\n", g_game.isFullscreen ? "fullscreen" : "windowed");
 }
 

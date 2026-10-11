@@ -70,11 +70,29 @@ static void judgeWindows(int lvl, double bpm, double early[4], double late[4])
 {
     const double f = (double)0.00833333f; /* mesma constante float32 do original */
     if (g_exceedSongIds) {
-        const float scale = (float)exJudgeBpm0() / 120.0f;
-        (void)lvl;
+        /* era (Exceed, exceed.exe 0x404138): tabela única, escalada pelo BPM do 1º
+         * bloco e dividida pelo BPM atual — a janela em tempo crescia nos blocos lentos:
+         *     const float scale = (float)exJudgeBpm0() / 120.0f;
+         *     (void)lvl;
+         *     early[j] = (double)((float)k_exUnitEarly[j] * scale) / bpm;
+         *     late[j]  = (double)((float)k_exUnitLate [j] * scale) / bpm;
+         *
+         * Zero (piu, conferido no assembly e no SCRIPT/NORMALMODE.LUA):
+         *   - bases por nível (EASY/NORMAL/HARD, setup +0xed7) vêm do Lua GetJudgeZone
+         *     (0x0808e8c0): PERFECT/GREAT/GOOD/BAD _ZONE_D (cedo, Y > 0) = 7,12,17,22 /
+         *     5,10,15,20 / 3,8,13,18 e _ZONE_U (tarde, Y < 0) = -12,-17,-22,-27 /
+         *     -10,-15,-20,-25 / -8,-13,-18,-23 — os mesmos números de k_unitEarly/Late;
+         *   - 0x0808ecc0: zona = base * (BPM do bloco / 120.0f [0x08101da0]), chamada
+         *     dentro do julgamento a cada bloco (0x0808cxxx), com o BPM DO BLOCO da linha;
+         *   - Y de cada linha anda BPM/1000 unidades por ms (0x08093112:
+         *     BPM * 60.0 / 60000.0), 60 unidades por batida.
+         * Logo zona/velocidade = base/120 s: a janela é FIXA em tempo, em qualquer BPM
+         * (PERFECT NORMAL: 41,7 ms cedo, 83,3 ms tarde). Mesmo resultado da NX (ms fixos).
+         * Teste estrito U < Y < D (0x0808cxxx), como em evaluateTiming. */
+        (void)bpm;
         for (int j = 0; j < 4; j++) {
-            early[j] = (double)((float)k_exUnitEarly[j] * scale) / bpm;
-            late[j]  = (double)((float)k_exUnitLate [j] * scale) / bpm;
+            early[j] = (double)((float)k_unitEarly[lvl][j] / 120.0f);
+            late[j]  = (double)((float)k_unitLate [lvl][j] / 120.0f);
         }
         return;
     }
@@ -487,6 +505,13 @@ static double getRowAtTimeFloat(double t)
  * Devolve o vão em linhas visuais (unidade de g_visualRow = divisão do bloco 0). */
 static double g_clkAnchor;          /* relógio do gameplay: âncora congelada */
 static bool   g_clkHave, g_clkLocked;
+static bool   g_rcActive = false;   /* relógio de desenho em uso (vsync) */
+static double g_rcSaved  = 0.0;     /* g_songTime da lógica, devolvido no End */
+static double g_rcAnchor;           /* âncora do desenho: segue g_clkAnchor aos poucos */
+static bool   g_rcHave;
+static double g_rcPrevSec;          /* presentSec do desenho anterior */
+static double g_rcShown;            /* tempo de música mostrado no desenho anterior */
+static bool   g_rcSeen;
 
 static double zeroDelayGapRows(int s)
 {
@@ -649,6 +674,8 @@ static int g_p1FlashTimer[2][MAX_PANELS]; // tile p1: zoom+fade ao pressionar
 static int g_noteState[2][MAX_PANELS]; // 0=normal, 1=exploding, 2=dead
 static int g_noteExplodeRow[2][MAX_PANELS]; // row index for clearing when dead
 static int g_noteExplodeFrame[2][MAX_PANELS]; // explosion frame counter 0..15
+static void holdHitFx(int player, int pan, int row);
+static bool rowOnlyLong(int player, int row);
 static int g_blindTimer[2];
 static int g_prevBlindRow;
 static int g_lastPerfectRow[2][MAX_PANELS];
@@ -825,6 +852,7 @@ static bool loadChartForSong(int songId, int diffTier, const char* modeName)
     }
     g_songTime = 0.0;
     g_clkHave = g_clkLocked = false;
+    g_rcHave = g_rcSeen = false;
     g_maxSongTime = 0.0;
     g_stagnantFrames = 0;
     g_lastPosMs = 0;
@@ -1091,6 +1119,16 @@ static bool isDNMode(void)
             strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "NIGHTMARE") == 0));
 }
 
+/* Índice de jogador em uso no gameplay. Em Double/Nightmare/HalfDouble o campo é
+ * único e tudo (julgamento, vida, velocidade, desenho) fica no índice 0, mesmo que
+ * quem joga seja o P2. Testar só activePlayerMask deixava o P2 sozinho em Double sem
+ * velocidade de bloco, RV/EW e sem stage break (olhava o índice 1, que não muda). */
+static bool playSlotActive(int p)
+{
+    if (isDNMode() || isHDMode()) return p == 0;
+    return (g_game.activePlayerMask & (1 << p)) != 0;
+}
+
 static int dnPanelBtn(int pan)
 {
     static const PadButton dnBtn[10] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR, PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
@@ -1211,6 +1249,8 @@ static void processPendingRows(int player) {
             jt = evaluateTiming(g_pending[i].worstDiff);
         else
             jt = JT_MISS;
+        /* long na linha: qualquer zona = PERFECT (ver rowOnlyLong) */
+        if (jt != JT_MISS && rowOnlyLong(player, g_pending[i].row)) jt = JT_PERFECT;
         for (int pan = 0; pan < jdPanels; pan++) {
             uint8_t pv = hdCheck ? getNoteHD(&g_chart->rows[g_pending[i].row], pan) : (dnPr ? getDNPanelValue(&g_chart->rows[g_pending[i].row], pan) : getPanelValue(&g_chart->rows[g_pending[i].row], pan, player));
             if (!pv) continue;
@@ -1223,6 +1263,7 @@ static void processPendingRows(int player) {
                     else {
                         g_holdRows[hdPly][pan] = g_pending[i].row;
                         holdOpenDbg("pend-HD", hdPly, pan, g_pending[i].row);
+                        holdHitFx(hdPly, pan, g_pending[i].row);
                         if (hdCheck) clearHDPanel(&g_chart->rows[g_pending[i].row], pan);
                         else clearDNPanel(&g_chart->rows[g_pending[i].row], pan);
                     }
@@ -1234,6 +1275,7 @@ static void processPendingRows(int player) {
                         g_holdRows[player][pan] = g_pending[i].row;
                 holdOpenDbg("pend", player, pan, g_pending[i].row);
                         holdOpenDbg("pend-DN", player, pan, g_pending[i].row);
+                        holdHitFx(player, pan, g_pending[i].row);
                         clearPanel(&g_chart->rows[g_pending[i].row], pan, player);
                     }
                 }
@@ -1425,17 +1467,48 @@ static void zeroJudge(int p)
         if (diff < -badE) break;
         if (g_zDone[p][ri]) continue;
         bool any = false, hitNow = false;
+        /* Correção trazida do NXReconstructed (969c7c3).
+         * era: qualquer acerto (inclusive o long segurado) encerrava a busca; com um
+         * long sendo segurado, o aperto de outra seta no mesmo quadro nunca chegava à
+         * linha dele, virava MISS e o MISS soltava o long (que sumia). Só um aperto
+         * de verdade (botão apertado neste quadro) conta para o "um aperto, uma linha". */
         for (int pan = 0; pan < panCount; pan++) {
             uint8_t v = ZJ_V(ri, pan);
             if (!v || (g_zHit[p][ri] & (1u << pan))) continue;
             any = true;
             bool autoHit = g_autoPanel[pan] && diff >= 0.0;
+            /* era: corpo/cauda contavam em toda a janela de PERFECT, inclusive antes do
+             * receptor:
+             *   bool holdHit = downB[pan] && evaluateTiming(diff) == JT_PERFECT &&
+             *                  (v == NT_HOLD_B || v == NT_HOLD_T || (v == NT_HOLD_H && diff >= 0.0));
+             * A janela é em unidades de Y divididas pelo BPM atual (judgeWindows): em
+             * bloco de BPM baixo (mudança de velocidade) ela alcança a cauda ainda no
+             * alto da tela, o hold terminava e o long sumia. Como na NX, cada parte
+             * segurada só conta quando a linha chega ao receptor (diff >= 0); o limite
+             * tardio é o do GREAT (hwL[1], como na NX) para o bloco de BPM alto não
+             * deixar a janela menor que um quadro. */
+            /* Revisto depois de conferir o piu do Zero (0x0808cxxx): o long segurado conta
+             * com a linha DENTRO da zona de PERFECT ([+0x240] < Y < [+0x244]), cedo ou
+             * tarde, e a cabeça (0xA) só com Y <= 0. O sumiço em bloco lento vinha da
+             * janela errada (escala do Exceed); com a janela fixa em tempo
+             * (judgeWindows) a regra original volta a valer:
+             * era (correção provisória): downB[pan] && diff >= 0.0 && diff < hwL[1] && ... */
             bool holdHit = downB[pan] && evaluateTiming(diff) == JT_PERFECT &&
                            (v == NT_HOLD_B || v == NT_HOLD_T || (v == NT_HOLD_H && diff >= 0.0));
+            /* O long é consumido em ordem: corpo/cauda só depois da parte anterior do
+             * mesmo painel (pega = apagada, ou perdida = marcada). Sem isso, com longs
+             * curtos o corpo e a cauda entravam na janela antes da cabeça; a cabeça
+             * vinha depois e g_holdRows apontava para um long já sem cauda, que sumia. */
+            if ((v == NT_HOLD_B || v == NT_HOLD_T) && ri > 0) {
+                uint8_t pv = ZJ_V(ri - 1, pan);
+                if ((pv == NT_HOLD_H || pv == NT_HOLD_B) && !(g_zHit[p][ri - 1] & (1u << pan)))
+                    continue;   /* parte anterior ainda pendente: nem segurar nem apertar consome esta */
+            }
             if (!hitB[pan] && !autoHit && !holdHit) continue;
             JudgeType jt = (autoHit || holdHit) ? JT_PERFECT : evaluateTiming(diff);
             if (jt == JT_MISS || jt == JT_NONE) continue;      /* fora da janela */
-            hitNow = true;
+            /* era: hitNow = true; */
+            if (hitB[pan] && !holdHit && !autoHit) hitNow = true;
             if (ZJ_ISHOLD(v)) {
                 zeroExplode(p, pan, ri);
                 ZJ_CLR(ri, pan);
@@ -1629,6 +1702,8 @@ static void processInput(int player)
                     g_pending[slot].active = false;
                     g_pendingCount--;
                     JudgeType pjt = evaluateTiming(g_pending[slot].worstDiff);
+                    /* long na linha: qualquer zona = PERFECT (ver rowOnlyLong) */
+                    if (pjt != JT_MISS && rowOnlyLong(player, bestRow)) pjt = JT_PERFECT;
                     for (int pan = 0; pan < panCount; pan++) {
                         uint8_t pv = isHD ? getNoteHD(&g_chart->rows[bestRow], pan) : (isDN ? getDNPanelValue(&g_chart->rows[bestRow], pan) : getPanelValue(&g_chart->rows[bestRow], pan, player));
                         if (!pv) continue;
@@ -1639,6 +1714,7 @@ static void processInput(int player)
                                 else {
                                     g_holdRows[player][pan] = bestRow;
                                     holdOpenDbg("input", player, pan, bestRow);
+                                    holdHitFx(player, pan, bestRow);
                                     clearHDPanel(&g_chart->rows[bestRow], pan);
                                 }
                             } else if (isDN) {
@@ -1647,6 +1723,7 @@ static void processInput(int player)
                                 else {
                                     g_holdRows[player][pan] = bestRow;
                                     holdOpenDbg("input", player, pan, bestRow);
+                                    holdHitFx(player, pan, bestRow);
                                     clearDNPanel(&g_chart->rows[bestRow], pan);
                                 }
                             } else {
@@ -1656,6 +1733,7 @@ static void processInput(int player)
                                 else {
                                     g_holdRows[player][pan] = bestRow;
                                     holdOpenDbg("input", player, pan, bestRow);
+                                    holdHitFx(player, pan, bestRow);
                                     clearPanel(&g_chart->rows[bestRow], pan, player);
                                 }
                             }
@@ -1725,6 +1803,8 @@ static void processInput(int player)
 
         g_nextNoteRow[player][panel] = bestRow + 1;
         JudgeType jt = evaluateTiming(bestDiff);
+        /* long na linha: qualquer zona = PERFECT (ver rowOnlyLong) */
+        if (jt != JT_MISS && rowOnlyLong(player, bestRow)) jt = JT_PERFECT;
         if (jt == JT_PERFECT || jt == JT_GREAT) {
             for (int pan = 0; pan < panCount; pan++)
                 if (isHD ? getNoteHD(&g_chart->rows[bestRow], pan) : (isDN ? getDNPanelValue(&g_chart->rows[bestRow], pan) : getPanelValue(&g_chart->rows[bestRow], pan, player))) {
@@ -1883,6 +1963,49 @@ static void processAutoplay(void)
     }
 }
                 
+/* Explosão/glow da seta ao pegar a cabeça do long. X1Rus playengine.cpp
+ * (~2773): nota longa julgada em QUALQUER zona faz m_LongFade = 1 e
+ * m_AniFade = 0. Antes o port só disparava o efeito via processRowJudgment,
+ * que pula GOOD/BAD. Mesmos campos usados em processHolds. */
+static void holdHitFx(int player, int pan, int row)
+{
+    g_noteState[player][pan] = 1;
+    g_noteExplodeRow[player][pan] = row;
+    g_noteExplodeFrame[player][pan] = 0;
+    g_glowTimer[player][pan] = 24;
+}
+
+/* Linha SÓ com nota longa (H/B/T), sem tap, para o jogador. X1Rus playengine.cpp
+ * (~2773): long julgado em qualquer zona = JUDGE_PERFECT; fora da zona (ou sem
+ * botão) é MISS. Não existe GREAT/GOOD/BAD de long.
+ * Linha com long + tap: vale o julgamento do tap pelo tempo (conta uma vez no
+ * combo; long solto nessa linha = MISS, tratado em processPendingRows). */
+static bool rowOnlyLong(int player, int row)
+{
+    bool isHD = isHDMode(), isDN = isDNMode();
+    int panCount = isHD ? 6 : (isDN ? 10 : 5);
+    bool hasLong = false;
+    for (int pan = 0; pan < panCount; pan++) {
+        uint8_t v = isHD ? getNoteHD(&g_chart->rows[row], pan)
+                  : (isDN ? getDNPanelValue(&g_chart->rows[row], pan)
+                  : getPanelValue(&g_chart->rows[row], pan, player));
+        if (v == NT_HOLD_H || v == NT_HOLD_B || v == NT_HOLD_T) hasLong = true;
+        else if (v) return false;   /* tem tap: julgamento do tap */
+    }
+    return hasLong;
+}
+
+/* Botão do painel apertado AGORA (long_stat do X1Rus DrawStepLine), sem
+ * depender do estado de captura do hold. Mesmo mapeamento de processHolds. */
+static bool holdPanelDown(int p, int panel)
+{
+    if (g_autoPanel[panel]) return true;
+    if (isHDMode()) return Input_IsPadDown(hdPanelPlayer(panel), hdPanelBtn(panel));
+    if (isDNMode()) return Input_IsPadDown(dnPanelPlayer(panel), dnPanelBtn(panel));
+    static const PadButton panelToBtn[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
+    return Input_IsPadDown(p, panelToBtn[panel]);
+}
+
 static void processHolds(void)
 {
     if (!g_songLoaded) return;
@@ -1944,8 +2067,10 @@ static void processHolds(void)
                             if (pan != panel && (isHD ? getNoteHD(&g_chart->rows[ri], pan) : (dnAP ? getDNPanelValue(&g_chart->rows[ri], pan) : getPanelValue(&g_chart->rows[ri], pan, p)))) { hasTap = 1; break; }
                         if (!hasTap) {
                             /* grade pelo tempo real (re-aperto tardio dá Great/Good/Bad) e com life */
-                            JudgeType hjt = evaluateTiming(diff);
-                            if (hjt == JT_MISS) hjt = JT_BAD;
+                            /* era: evaluateTiming(diff), MISS -> BAD. Long no original
+                             * é sempre PERFECT dentro da zona (ver rowOnlyLong). */
+                            JudgeType hjt = JT_PERFECT;
+                            (void)diff;
                             applyRowJudgment(p, hjt);
                         }
                         /* Captura é uma só. Sem este break o laço seguia varrendo
@@ -2011,8 +2136,9 @@ static void processHolds(void)
                     g_noteExplodeFrame[p][panel] = 0;
                     g_glowTimer[p][panel] = 24;
                     if (!hasUnjudgedTap) {
-                        JudgeType hjt = evaluateTiming(g_songTime - rowTime);
-                        if (hjt == JT_MISS) hjt = JT_BAD;
+                        /* era: evaluateTiming(g_songTime - rowTime), MISS -> BAD.
+                         * Long no original é sempre PERFECT (ver rowOnlyLong). */
+                        JudgeType hjt = JT_PERFECT;
                         applyRowJudgment(p, hjt);
                     }
                 }
@@ -2179,6 +2305,9 @@ void Gameplay_Start(int songId)
      * julgamento/combo são cenas dele. Fica como mais um BGA depois do da música. */
     g_exJudgeBga = -1;
     memset(g_exJudgeCnt, 0, sizeof(g_exJudgeCnt));
+    /* Sem isto o tipo do último julgamento da música anterior ficava, e com o
+     * contador em 0 o PERFECT/MISS dele tocava no início da música seguinte. */
+    g_judgeDisplayType[0] = g_judgeDisplayType[1] = JT_NONE;
     if (g_exceedSongIds) exLoadSkin();   /* Exceed2 0x404350: SKIN0X.DAT */
     /* Zero: a nota é o próprio skinN.spr do SKINxx.DAT (não há ARROW54x);
      * grupo 0..4 = 542, 541, 545, 543, 544 no código herdado. */
@@ -2261,6 +2390,28 @@ void Gameplay_ExScoreSync(void)
     }
 }
 
+/* Double / Nightmare / HalfDouble jogados só pelo P2: o campo único é julgado no índice 0
+ * (zeroJudge(0), processInput(0)), mas o Dance Grade, a razão do estágio e o total do
+ * crédito leem o índice do jogador que entrou. Sem isto o P2 via tudo zerado no Dance
+ * Grade. Chamado uma vez, na entrada do resultado. (Trazido do NXReconstructed.) */
+void Gameplay_DoubleToOwner(void)
+{
+    if (!(isDNMode() || isHDMode()) || g_game.activePlayerMask != 0x2) return;
+    Gameplay_ExScoreSync();   /* fecha a pontuação no índice 0 antes de mover */
+    g_game.stats.score[1]        = g_game.stats.score[0];        g_game.stats.score[0] = 0;
+    g_game.stats.combo[1]        = g_game.stats.combo[0];        g_game.stats.combo[0] = 0;
+    g_game.stats.maxCombo[1]     = g_game.stats.maxCombo[0];     g_game.stats.maxCombo[0] = 0;
+    g_game.stats.perfectCount[1] = g_game.stats.perfectCount[0]; g_game.stats.perfectCount[0] = 0;
+    g_game.stats.greatCount[1]   = g_game.stats.greatCount[0];   g_game.stats.greatCount[0] = 0;
+    g_game.stats.goodCount[1]    = g_game.stats.goodCount[0];    g_game.stats.goodCount[0] = 0;
+    g_game.stats.badCount[1]     = g_game.stats.badCount[0];     g_game.stats.badCount[0] = 0;
+    g_game.stats.missCount[1]    = g_game.stats.missCount[0];    g_game.stats.missCount[0] = 0;
+    g_game.stats.missCombo[1]    = g_game.stats.missCombo[0];    g_game.stats.missCombo[0] = 0;
+    g_game.stats.life[1]         = g_game.stats.life[0];
+    for (int i = 0; i < 3; i++) { s_exPrev[1][i] = s_exPrev[0][i]; s_exPrev[0][i] = 0; }
+    Log_Print("GP: Double do P2: contadores movidos para o índice do jogador (score %u)\n", (unsigned)g_game.stats.score[1]);
+}
+
 void Gameplay_Exit(void)
 {
     BGM_Stop();
@@ -2281,12 +2432,64 @@ void Gameplay_Exit(void)
  * qualquer refresh. Só avança (nunca volta) e não mexe na âncora. */
 void Gameplay_RefreshClock(void)
 {
+    if (g_rcActive) return;
     if (g_game.state != STATE_GAMEPLAY || !g_songLoaded || !g_clkLocked) return;
     if (!BGM_IsDSActive() || g_stageBreakFreezeTimer >= 0.0f) return;
     double now;
     if (BGM_ClockAnchorSec(&now) < 0.0) return;
     double t = (now - g_clkAnchor) - (g_game.audioOffsetMs / 1000.0);
     if (t > g_songTime) g_songTime = t;
+}
+
+/* Trazido do NXReconstructed (b79b3bb). Com vsync: desenha com o relógio no instante
+ * do último swap (presentSec, no domínio do SDL_GetPerformanceCounter, em s) em vez
+ * do instante em que o desenho começou. O swap retorna alinhado ao vblank, então o
+ * intervalo entre leituras é sempre o período do monitor; lendo depois do
+ * Game_Update, o custo do update (0/1/2 passos, vídeo, log) entrava na posição das
+ * setas e elas trepidavam mesmo a 60 fps. O g_songTime da lógica (usado no
+ * julgamento) é devolvido intacto pelo Gameplay_EndRenderClock.
+ * O desenho tem âncora própria, que parte do que já estava na tela e segue a da
+ * lógica a no máx. 2% da velocidade (sem a travada do 1º segundo). */
+bool Gameplay_BeginRenderClock(double presentSec)
+{
+    if (g_game.state != STATE_GAMEPLAY || !g_songLoaded) return false;
+    double off = g_game.audioOffsetMs / 1000.0;
+    if (!g_clkHave || !BGM_IsDSActive() || g_stageBreakFreezeTimer >= 0.0f ||
+        BGM_ClockAnchorSec(NULL) < 0.0) {
+        /* Ainda no relógio da lógica: guarda o que vai para a tela. */
+        g_rcShown = g_songTime;
+        g_rcPrevSec = presentSec;
+        g_rcSeen = true;
+        g_rcHave = false;
+        return false;
+    }
+    double dtp = presentSec - g_rcPrevSec;
+    if (dtp < 0.0) dtp = 0.0; else if (dtp > 0.1) dtp = 0.1;
+    if (!g_rcHave) {
+        /* Continua de onde o desenho anterior parou. */
+        g_rcAnchor = g_rcSeen ? presentSec - off - (g_rcShown + dtp) : g_clkAnchor;
+        g_rcHave = true;
+    }
+    double d = g_clkAnchor - g_rcAnchor;
+    double maxStep = dtp * 0.02;
+    if (d > 0.1 || d < -0.1) g_rcAnchor = g_clkAnchor;   /* desvio real: reancora */
+    else if (d > maxStep)    g_rcAnchor += maxStep;
+    else if (d < -maxStep)   g_rcAnchor -= maxStep;
+    else                     g_rcAnchor = g_clkAnchor;
+    g_rcSaved = g_songTime;
+    g_songTime = (presentSec - g_rcAnchor) - off;
+    g_rcShown = g_songTime;
+    g_rcPrevSec = presentSec;
+    g_rcSeen = true;
+    g_rcActive = true;
+    return true;
+}
+
+void Gameplay_EndRenderClock(void)
+{
+    if (!g_rcActive) return;
+    g_songTime = g_rcSaved;
+    g_rcActive = false;
 }
 
 void Gameplay_Update(float dt)
@@ -2362,7 +2565,7 @@ void Gameplay_Update(float dt)
         {
             float spd = (float)(k - '0');
             for (int _dp = 0; _dp < 2; _dp++) {
-                if (!(g_game.activePlayerMask & (1 << _dp))) continue;
+                if (!playSlotActive(_dp)) continue;   /* era: activePlayerMask & (1 << _dp) */
                 g_scrollSpeedTarget[_dp]    = spd;
                 g_game.cmdEarthworm[_dp]    = false; /* accel remove Earthworm */
             }
@@ -2376,7 +2579,8 @@ void Gameplay_Update(float dt)
 
         for (int _p = 0; _p < 2; _p++)
         {
-            if (!(g_game.activePlayerMask & (1 << _p))) continue;
+            /* era: if (!(g_game.activePlayerMask & (1 << _p))) continue; */
+            if (!playSlotActive(_p)) continue;
 
             /* RV e Earthworm só trocam a velocidade na virada de compasso (48 rows).
              * Original (PUMPY.EXE 0x4141cc): DAT_00da24b4 % 0x30 == 0 && != DAT_00da24bc.
@@ -2538,7 +2742,7 @@ void Gameplay_Update(float dt)
                 }
             } else {
                 for (int _p = 0; _p < 2; _p++) {
-                    if (!(g_game.activePlayerMask & (1 << _p))) continue;
+                    if (!playSlotActive(_p)) continue;   /* era: activePlayerMask & (1 << _p) */
                     if (g_game.stats.life[_p] < 1) {
                         Log_Print("GP: stage break P%d life<1 (opt=%d stage=%d)\n", _p+1, opt, stageIdx);
                         sbTrigger = true;
@@ -2557,7 +2761,7 @@ void Gameplay_Update(float dt)
                 }
             } else {
                 for (int _p = 0; _p < 2; _p++) {
-                    if (!(g_game.activePlayerMask & (1 << _p))) continue;
+                    if (!playSlotActive(_p)) continue;   /* era: activePlayerMask & (1 << _p) */
                     if (g_game.stats.missCombo[_p] > STAGE_BREAK_MISSES) {
                         Log_Print("GP: stage break P%d missCombo=%d\n", _p+1, g_game.stats.missCombo[_p]);
                         sbTrigger = true;
@@ -3244,17 +3448,31 @@ void Gameplay_Render(void)
                 }
                 /* 2) cabeça acima da tela (não segurada): só se a linha inicial for
                  * corpo/ponta de um hold que ainda tem a cabeça no gráfico */
+                /* era: só procurava depois da cauda do long segurado (lastTail):
+                 *   if (lastTail < startRow) { for (int k = startRow; k >= 0 && k > lastTail; k--) {
+                 * um long do mesmo painel perdido ANTES dele (MISS, segue subindo) não era
+                 * desenhado e sumia quando o próximo long já estava seguro. Agora a busca
+                 * cobre a tela toda e só pula o trecho do long segurado (correção da NX). */
                 int from = startRow;
-                if (lastTail < startRow) {
-                    for (int k = startRow; k >= 0 && k > lastTail; k--) {
+                {
+                    for (int k = startRow; k >= 0; k--) {
                         uint8_t v = Z_PV(k, panel);
                         if (v == NT_HOLD_H) { from = k; break; }
+                        /* long solto no meio: a cabeça e o trecho segurado foram
+                         * apagados; o resto começa no corpo depois da linha vazia */
+                        if (v == 0 && k < startRow && Z_PV(k + 1, panel) == NT_HOLD_B) { from = k + 1; break; }
                         if (v != NT_HOLD_B && !(k == startRow && v == NT_HOLD_T)) break;
                     }
                 }
-                /* 3) cabeças visíveis */
-                for (int h = (from > lastTail ? from : lastTail + 1); h <= endRow && h < rows; h++) {
-                    if (Z_PV(h, panel) != NT_HOLD_H) continue;
+                /* 3) cabeças visíveis
+                 * era: for (int h = (from > lastTail ? from : lastTail + 1); ...) */
+                for (int h = from; h <= endRow && h < rows; h++) {
+                    if (held >= 0 && h > held && h <= lastTail) { h = lastTail; continue; }   /* long segurado */
+                    uint8_t hv = Z_PV(h, panel);
+                    /* era: só HOLD_H. Também o corpo órfão (linha anterior apagada):
+                     * é o que sobra de um long solto no meio, que segue subindo. */
+                    if (hv != NT_HOLD_H &&
+                        !(hv == NT_HOLD_B && h > 0 && Z_PV(h - 1, panel) == 0)) continue;
                     int t; Z_TAIL(h, t);
                     if (t < 0) continue;
                     Z_DRAW(h, t, false);
@@ -3266,6 +3484,8 @@ void Gameplay_Render(void)
             #undef Z_PV
             #undef Z_ROWY
         }
+        bool exHeldHead[MAX_PANELS] = { false };
+        float exHeadY[MAX_PANELS] = { 0 };   /* Y da cabeça do hold redesenhada (Exceed) */
         // Pass 0: Hold bodies (esticados entre runs de NT_HOLD_B)
         if (g_fontArrowETC >= 0 && !g_zeroSkinArrows) {
             for (int panel = 0; panel < panelCount; panel++)
@@ -3311,9 +3531,32 @@ void Gameplay_Render(void)
                     }
 
                     if (ownedByActive) {
-                        /* HOLD SEGURADO (PERFECT): body começa exatamente na linha do receptor.
-                         * Independe de velocidade ou de rows processadas — sem gap. */
+                        /* HOLD SEGURADO: body começa no receptor (X1Rus playengine.cpp
+                         * DrawStepLine, ramo "m_CurY > 0.0f && long_stat": m_CurY > 0 = linha
+                         * AINDA NÃO chegou, já que m_Y diminui com o tempo; corpo e cabeça
+                         * são transladados de volta ao receptor). */
                         y1 = (float)(receptorY + rh2 / 2);
+                        /* era (leitura invertida do m_CurY, cabeça "caminhava" até o receptor):
+                        float vh = (activeHold < g_visualRowCount && g_visualRow) ? (float)g_visualRow[activeHold] : (float)activeHold;
+                        float yh = (float)(receptorY + rh2 / 2 + (vh - visualScrollRow) * pPixelsPerRow);
+                        y1 = (yh > (float)(receptorY + rh2 / 2)) ? yh : (float)(receptorY + rh2 / 2);
+                        */
+                    } else if (g_exceedSongIds && ri > 0 &&
+                               (isHalfDouble ? getNoteHD(&g_chart->rows[ri - 1], panel)
+                               : (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[ri - 1], panel)
+                               : getPanelValue(&g_chart->rows[ri - 1], panel, p))) == 0) {
+                        /* Corpo sem cabeça (linha anterior já consumida) e sem hold
+                         * capturado. X1Rus DrawStepLine, MIDDLE com NOTE(-1) == 0:
+                         *   botão apertado e linha ainda não chegou (m_CurY > 0)
+                         *     -> corpo e seta presos no receptor;
+                         *   senão -> seta desenhada na própria linha, corpo dali.
+                         * Antes o port desenhava só o corpo, cortado reto e sem seta. */
+                        float yr = (float)(receptorY + rh2 / 2);
+                        if (holdPanelDown(p, panel) && y1 >= yr) y1 = yr;
+                        if (!exHeldHead[panel] && !g_game.cmdNonStep[p]) {   /* só o 1º run (o de cima) */
+                            exHeldHead[panel] = true;
+                            exHeadY[panel] = y1;
+                        }
                     } else {
                         /* MISS / não segurado: ancora topo do body no centro do HoldHead (ri-1)
                          * para eliminar o buraco visual entre head e body. */
@@ -3388,7 +3631,6 @@ void Gameplay_Render(void)
          *           corpo (y_interp + 30 + CurY*speed/1000 .. 55); aqui os corpos
          *           consumidos já foram apagados por clearPanel, então sem este
          *           bloco sobrava um buraco entre o receptor e a ponta. */
-        bool exHeldHead[MAX_PANELS] = { false };
         if (g_exceedSongIds && (g_fontArrowETC >= 0 || g_zeroSkinArrows) && !g_game.cmdNonStep[p]) {
             #define EX_PV(r, pn) (isHalfDouble ? getNoteHD(&g_chart->rows[r], pn) \
                                : (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[r], pn) \
@@ -3400,7 +3642,11 @@ void Gameplay_Render(void)
                 for (int ri = hr + 1; ri < (int)g_chart->rowCount; ri++) {
                     uint8_t v = EX_PV(ri, panel);
                     if (!v) continue;
-                    if (v == NT_HOLD_B) exHeldHead[panel] = true;
+                    if (v == NT_HOLD_B) {
+                        /* DrawStepLine: segurado, a seta fica no receptor */
+                        exHeadY[panel] = (float)(receptorY + rh2 / 2);
+                        exHeldHead[panel] = true;
+                    }
                     else if (v == NT_HOLD_T) tailRi = ri;
                     break;
                 }
@@ -3589,7 +3835,7 @@ void Gameplay_Render(void)
             int aidx = arrowSpr + arrowAnimFrame();
             float sw = (float)g_game.sprTiles[aidx].srcW;
             float sh = (float)g_game.sprTiles[aidx].srcH;
-            float y = (float)(receptorY + rh2 / 2);
+            float y = exHeadY[panel];   /* era: (float)(receptorY + rh2 / 2) */
             /* Exceed2: cabeça presa no receptor pela skin (skinN_l1) */
             if (arrowGroup >= 0 && arrowGroup < 5 && g_skinL1[arrowGroup] >= 0) {
                 int sIdx = g_skinL1[arrowGroup] + arrowAnimFrame();

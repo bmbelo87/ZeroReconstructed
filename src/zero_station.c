@@ -36,7 +36,7 @@
 
 enum { ST_EASY = 0, ST_ARCADE = 1, ST_MISSION = 2, ST_REMIX = 3, ST_COUNT = 4 };
 
-static int  g_phase;          /* 1 in, 2 principal, 3 saída */
+static int  g_phase;          /* 1 in, 2 principal, 3 saída, 4 preto (port) */
 static int  g_sel;            /* +0x68 */
 static int  g_anim;           /* +0x64: 0 hold, 1 pan_left, 2 pan_right */
 static bool g_confirmed;      /* +0x60 */
@@ -266,6 +266,16 @@ void Station_Update(float dt) {
         playScene("top_up");
         playScene("out");
         if (g_fade >= 40) {
+            /* Port: antes de trocar, apresenta 1 quadro todo preto (fase 4).
+             * A Select carrega SELECT.DAT + 90.DAT na entrada e, sem isso, o
+             * último quadro do fade (39/40 com top_up/out por cima) ficava
+             * parado na tela durante o carregamento. */
+            g_phase = 4;
+            return;
+        }
+        g_fade++;
+    } else if (g_phase == 4) {
+        {
             /* ARCADE -> "SELECT"; REMIX -> "SELECT" (canal REMIX pela estação);
              * EASY / MISSION: telas ainda não feitas -> ARCADE */
             if (g_sel == ST_REMIX) ExSelect_SetStation(1, 3);
@@ -281,11 +291,15 @@ void Station_Update(float dt) {
             Game_ChangeState(STATE_EXSELECT);
             return;
         }
-        g_fade++;
     }
 }
 
 void Station_Render(void) {
+    if (g_phase == 4) {   /* port: tela preta enquanto a Select carrega */
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        return;
+    }
     Movie_Render();
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

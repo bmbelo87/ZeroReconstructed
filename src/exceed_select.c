@@ -214,6 +214,8 @@ static unsigned g_flags;        /* [0x568FF4] acima de 0xFFF (X-MODE) */
 bool ExSelect_IsXMode(void) { return (g_flags & 0x8000u) != 0; }
 /* [0x484F7C] acima de 0xFFF: skin (0x10000 / 0x20000, PIU32.EXE 0x4043A1) etc. */
 unsigned ExSelect_GetFlags(void) { return g_flags; }
+/* Select do Zero (zero_select.c): o X dos códigos vira o mesmo flag lido pelo gameplay */
+void ExSelect_SetXMode(bool on) { if (on) g_flags |= 0x8000u; else g_flags &= ~0x8000u; }
 static unsigned g_mods[2];      /* +0x184 de cada jogador */
 static int      g_joinFrame[2]; /* +0x4C (P1) / +0x54 (P2) */
 static uint8_t  g_buf9[2][9];   /* 0x5638E0 */

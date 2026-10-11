@@ -1,4 +1,5 @@
 #include "pumpy.h"
+#include "recomp_version.h"   /* RECOMP_VERSION (gerado) */
 #include "testbga.h"
 #include "movie.h"
 #include "vsl.h"
@@ -12,6 +13,7 @@ extern bool Window_ProcessMessages(void);
 static void InitSystems(void) {
     Log_Print("=== PUMP IT UP v%s (%s %s) ===\n",
               GAME_VERSION, GAME_BUILD_DATE, GAME_BUILD_TIME);
+    Log_Print("Build: RECOMP-%s\n", RECOMP_VERSION);   /* versão do projeto, para conferir em logs de usuário */
 
     timeBeginPeriod(1);
 
@@ -165,6 +167,7 @@ void Game_ResetAllCheats(void) {
         g_game.cmdNonStep[_p]        = false;
         g_game.cmdTestBGA[_p]        = false;
     }
+    ExSelect_SetXMode(false);   /* o X da Select do Zero é um flag global à parte */
     Log_Print("CHEATS: reset global (ESC/GameOver)\n");
 }
 
@@ -296,6 +299,12 @@ void Game_Update(float dt) {
     /* Alt+F4: encerra o jogo imediatamente de qualquer tela */
     if (Input_IsKeyHit(VK_F4) && Input_IsKeyDown(VK_MENU))
         Window_RequestQuit();
+
+    /* Alt+Enter: alterna janela / tela cheia exclusiva de qualquer tela. A função
+     * Window_ToggleFullscreen existia, mas nada a chamava: o atalho não fazia nada.
+     * O input.c retém o Enter enquanto o Alt está segurado. */
+    if (Input_AltEnterHit())
+        Window_ToggleFullscreen();
 
     /* F1 abre o SETUP MENU de qualquer tela. Dentro do menu o F1 passa a ser o
      * TEST BUTTON (percorre a lista) e o F2 o SERVICE BUTTON (confirma) —
@@ -489,7 +498,12 @@ void Game_Update(float dt) {
                     }
                 }
                 Movie_Update(dt);
-                exDone = !Movie_IsOpen() || Movie_GetDecoded() >= 57;
+                /* era (Exceed 0x4151F4): exDone = !Movie_IsOpen() || Movie_GetDecoded() >= 57;
+                 * Os NST1..3.MOV do Zero têm 101 quadros (3,37 s a 29,97 fps): com o
+                 * limite do Exceed a tela saía com o vídeo pela metade. Agora sai
+                 * quando o vídeo termina. (Regra de saída do CNextStage do Zero ainda
+                 * não conferida no binário.) */
+                exDone = !Movie_IsOpen() || Movie_HasEnded();
                 if (exDone) Movie_Close();
             }
         if (g_exceedSongIds ? exDone : (g_game.stateFrame >= 60)) {
@@ -574,7 +588,12 @@ void Game_Update(float dt) {
                 goStart = timeGetTime();
             }
             Movie_Update(dt);
-            if (!Movie_IsOpen() || timeGetTime() - goStart >= 4000) {
+            /* era (Exceed 0x41527C): if (!Movie_IsOpen() || timeGetTime() - goStart >= 4000)
+             * O GAMEOVER.MOV do Zero tem 121 quadros (4,04 s): os 4000 ms de relógio,
+             * contados desde antes da carga do vídeo, cortavam o fim. Agora sai
+             * quando o vídeo termina; 8 s é só uma trava de segurança. (Regra de
+             * saída do CGameOver do Zero ainda não conferida no binário.) */
+            if (!Movie_IsOpen() || Movie_HasEnded() || timeGetTime() - goStart >= 8000) {
                 Movie_Close();
                 Resource_ClearBGA();
                 Menu_ResetState();
@@ -925,8 +944,19 @@ void Game_MainLoop(void) {
     const double STEP_MS = 1000.0 / 60.0;
     const int    MAX_CATCHUP = 5;   /* teto de passos por iteração */
 
+    /* Laço trazido do NXReconstructed (b79b3bb, 7fa854d). */
     double accumulator = 0.0;
-    uint32_t prevTime = timeGetTime();
+    /* era: uint32_t prevTime = timeGetTime();  (1 ms de resolução: o número de
+     * passos por refresh oscilava 0/1/2 e as setas tremiam, com ou sem vsync) */
+    double qpcHz = (double)SDL_GetPerformanceFrequency();
+    uint64_t prevQpc = SDL_GetPerformanceCounter();
+    uint64_t startQpc = prevQpc;      /* origem dos tempos em ms da agenda de desenho */
+    uint64_t lastSwapQpc = prevQpc;
+    double nextRenderMs = 0.0;        /* próximo desenho do gameplay sem vsync */
+    bool   pendingTick = false;       /* houve passo de lógica desde o último desenho */
+    int    fastFrames = 0;            /* quadros seguidos rápidos demais com "vsync" */
+    double presentSec = 0.0;          /* instante (s) do último swap, filtrado */
+    bool   presentValid = false;
 
     while (running) {
         if (!Window_ProcessMessages()) {
@@ -934,14 +964,22 @@ void Game_MainLoop(void) {
             break;
         }
 
-        uint32_t now = timeGetTime();
-        double elapsed = (double)(uint32_t)(now - prevTime);
-        prevTime = now;
+        /* era: uint32_t now = timeGetTime(); double elapsed = (double)(now - prevTime); */
+        uint64_t nowQpc = SDL_GetPerformanceCounter();
+        double elapsed = (double)(nowQpc - prevQpc) * 1000.0 / qpcHz;
+        prevQpc = nowQpc;
 
         /* Uma pausa longa (janela minimizada, breakpoint, troca de faixa que
          * travou) não pode virar uma avalanche de catch-up. */
         if (elapsed > 250.0) elapsed = 250.0;
         accumulator += elapsed;
+
+        /* Extra do port: detector de travadas. Mede update/render deste giro e,
+         * se passar de 50 ms, grava no log onde o tempo foi gasto. */
+        extern double g_movieMs, g_logMs;
+        double hzF = (double)SDL_GetPerformanceFrequency();
+        uint64_t hz0 = SDL_GetPerformanceCounter();
+        g_movieMs = 0.0; g_logMs = 0.0;
 
         int steps = 0;
         while (accumulator >= STEP_MS && steps < MAX_CATCHUP) {
@@ -953,22 +991,90 @@ void Game_MainLoop(void) {
         if (steps == MAX_CATCHUP)
             accumulator = 0.0;   /* desistiu de alcançar: não acumula dívida */
 
-        /* era: só desenhava com steps > 0. O timeGetTime (1 ms) e o refresh do
-         * monitor não andam juntos, então às vezes um refresh ficava sem quadro
-         * novo e a imagem repetia (engasgo das setas). Com vsync agora desenha
-         * em TODO refresh; o swap bloqueia e dá o ritmo. As setas pegam o
-         * relógio da música no momento do desenho (Gameplay_RefreshClock). */
-        /* Desenho extra entre passos (refresh > 60 Hz) só no gameplay, para as
-         * setas; nesses desenhos g_renderTick = false e as cenas do BGA não
-         * avançam, então animações, judge e spark ficam em 60 Hz. Fora do
-         * gameplay volta ao ritmo de 60 Hz (várias telas avançam no desenho). */
-        bool extra = g_game.vsync && g_game.state == STATE_GAMEPLAY;
-        if (steps > 0 || extra) {
-            g_renderTick = (steps > 0);
-            Game_Render();       /* o swap com vsync bloqueia até o refresh */
-            g_renderTick = true;
+        /* Desenho. Fora do gameplay: um desenho por giro com passo de lógica (60 Hz;
+         * várias telas avançam no desenho). No gameplay: com vsync aplicado de fato,
+         * desenha em todo refresh (o swap bloqueia e dá o ritmo); sem vsync, numa
+         * agenda fixa na taxa do monitor (próximo += período, sem acumular atraso).
+         * Nos desenhos sem passo de lógica g_renderTick = false e as cenas do BGA
+         * não avançam, então animações, judge e spark ficam em 60 Hz.
+         * era: bool extra = g_game.vsync && g_game.state == STATE_GAMEPLAY;
+         *      if (steps > 0 || extra) { g_renderTick = (steps > 0); Game_Render(); ... }
+         * "vsync" era o que o INI pede, não o que o driver aplicou: com o driver
+         * recusando, o gameplay desenhava sem limite; sem vsync, só a 60 Hz fora de
+         * fase com o monitor. */
+        bool vsOn = Window_VsyncActive();
+        bool inGp = (g_game.state == STATE_GAMEPLAY);
+        double monHz = (double)Window_GetRefreshRate();
+        double periodMs = 1000.0 / (monHz > 0.0 ? monHz : 60.0);
+        double nowMs = (double)(nowQpc - startQpc) * 1000.0 / qpcHz;
+        if (steps > 0) pendingTick = true;
+        bool doRender;
+        if (!inGp) {
+            doRender = (steps > 0);
+            nextRenderMs = nowMs;            /* a agenda recomeça ao entrar no gameplay */
+        } else if (vsOn) {
+            doRender = true;                 /* o swap bloqueia e dá o ritmo */
         } else {
-            Sleep(1);            /* nada a fazer neste giro */
+            doRender = (nowMs >= nextRenderMs);
+            if (doRender) {
+                nextRenderMs += periodMs;
+                if (nextRenderMs < nowMs) nextRenderMs = nowMs + periodMs;   /* atrasou mais de um período */
+            }
+        }
+        if (doRender) {
+            g_renderTick = pendingTick;      /* era: (steps > 0) */
+            pendingTick = false;
+            uint64_t hz1 = SDL_GetPerformanceCounter();
+            double movUpd = g_movieMs, logUpd = g_logMs;
+            /* era: Game_Render() direto; o relógio das setas era lido no começo
+             * do desenho, depois do Game_Update, e o custo do update virava
+             * tremor. Com vsync usa o instante do último swap (presentSec). */
+            bool rc = false;
+            if (vsOn && presentValid && inGp)
+                rc = Gameplay_BeginRenderClock(presentSec);
+            Game_Render();       /* o swap com vsync bloqueia até o refresh */
+            if (rc) Gameplay_EndRenderClock();
+            g_renderTick = true;
+            uint64_t hz2 = SDL_GetPerformanceCounter();
+            /* vsync "ligado" mas o swap não bloqueia (driver forçando desligado): os
+             * quadros saem muito mais rápido que o monitor. 120 seguidos abaixo de
+             * 35% do período -> passa para o limitador. */
+            if (vsOn && inGp) {
+                double dMs = (double)(hz2 - lastSwapQpc) * 1000.0 / qpcHz;
+                fastFrames = (dMs < periodMs * 0.35) ? fastFrames + 1 : 0;
+                if (fastFrames >= 120) { Window_VsyncFailed(); fastFrames = 0; nextRenderMs = nowMs; }
+            } else {
+                fastFrames = 0;
+            }
+            lastSwapQpc = hz2;
+            /* Instante do swap, filtrado: perto do previsto (anterior + período)
+             * só corrige 10% do erro, para o intervalo ficar regular mesmo se o
+             * retorno do swap oscilar; longe (quadro perdido, vsync que não
+             * pegou) assume o valor medido. */
+            {
+                double tSwap = (double)hz2 / hzF;
+                double period = periodMs / 1000.0;
+                double pred = presentSec + period;
+                double err = tSwap - pred;
+                if (!presentValid || err > period * 0.5 || err < -period * 0.5)
+                    presentSec = tSwap;
+                else
+                    presentSec = pred + err * 0.1;
+                presentValid = true;
+            }
+            double updMs = (double)(hz1 - hz0) * 1000.0 / hzF;
+            double rndMs = (double)(hz2 - hz1) * 1000.0 / hzF;
+            if (updMs + rndMs > 50.0 || elapsed > 50.0) {
+                double logTot = g_logMs;
+                Log_Print("HITCH: gap=%.0f ms update=%.1f ms (%d passos, video=%.1f, log=%.1f) render=%.1f ms (log=%.1f) estado=%d\n",
+                          elapsed, updMs, steps, movUpd, logUpd, rndMs, logTot - logUpd, (int)g_game.state);
+            }
+        } else {
+            /* era: Sleep(1) sempre. Perto do próximo passo ou do próximo desenho da
+             * agenda, só cede a vez (Sleep(0)) para não passar do ponto em 1 ms. */
+            double waitMs = STEP_MS - accumulator;
+            if (inGp && !vsOn && nextRenderMs - nowMs < waitMs) waitMs = nextRenderMs - nowMs;
+            Sleep(waitMs > 2.0 ? 1 : 0);
         }
     }
 }

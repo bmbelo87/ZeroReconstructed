@@ -39,7 +39,10 @@ void Loading_Enter(int songId) {
     /* era (Exceed2): "%s/TITLE/T%s.pnz" com Song_DataIdStr(songId) */
     Log_Print("Loading: loading PNZ '%s'\n", path);
 
-    g_pnzTexId = Resource_LoadPNZ(path);
+    /* Demo Play nunca carrega PNZ (Exceed2 PIU32.EXE 0x40419b: [0x484F7C] & 0x100000
+     * pula a carga; regra das versões).
+     * era: g_pnzTexId = Resource_LoadPNZ(path); */
+    g_pnzTexId = g_exDemo ? -1 : Resource_LoadPNZ(path);
     if (g_pnzTexId < 0) {
         Log_Print("Loading: PNZ not found for song %d\n", songId);
     }
@@ -115,14 +118,22 @@ void Loading_Update(float dt) {
             g_game.state = STATE_GAMEPLAY;
             Gameplay_Start(g_loadingSongId);
 
+            /* Extra do port: o vídeo é aberto, lido inteiro para a memória e tem o
+             * 1º quadro decodificado AQUI, com o PNZ na tela e antes da espera
+             * (que absorve o tempo). Sem isso a leitura de disco (blocos de 4 KB
+             * durante a música) e a init do decoder caíam dentro do gameplay.
+             * era: Movie_Open depois da espera. */
+            if (useMov) {
+                Log_Print("Loading: loading MOV '%s'\n", movPath);
+                if (Movie_Open(movPath, movLoop)) {
+                    Movie_Preload();
+                    Movie_Prime();
+                }
+            }
+
             /* Espera ativa como no original (0x4116b5): nada é desenhado. */
             while (timeGetTime() - g_loadingStartMs < LOADING_MIN_TO_MUSIC_MS)
                 Sleep(1);
-
-            if (useMov) {
-                Log_Print("Loading: loading MOV '%s'\n", movPath);
-                Movie_Open(movPath, movLoop);
-            }
             if (audOk && !(g_exDemo && !Demo_SoundOn()))   /* 0x40236A */
                 BGM_Play(false);
             g_game.stateFrame = 0;

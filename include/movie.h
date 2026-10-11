@@ -12,5 +12,7 @@ int  Movie_GetDecoded(void);   /* [+0x30]: quadros decodificados */
 void Movie_Update(float dt);
 void Movie_Render(void);
 void Movie_RenderRect(float x0, float y0, float x1, float y1, float c, float alpha); /* Zero: prévia da Select */
+bool Movie_Preload(void);      /* extra do port: vídeo inteiro em memória */
+void Movie_Prime(void);        /* extra do port: 1º quadro pronto antes do gameplay */
 
 #endif

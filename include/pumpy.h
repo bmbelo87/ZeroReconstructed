@@ -541,6 +541,7 @@ void Window_Destroy(void);
 void Window_SwapBuffers(void);
 bool Window_ProcessMessages(void);
 void Window_ToggleFullscreen(void);
+bool Input_AltEnterHit(void);      /* input.c: Alt+Enter apertado neste quadro (o Enter fica retido) */
 void Window_ApplyGraphics(void);
 void Window_GetResolution(int idx, int* w, int* h);
 void Window_RequestQuit(void);   /* SDL port: asks the message pump to exit   */
@@ -626,6 +627,11 @@ bool BGM_IsPlaying(void);
 uint32_t BGM_GetPositionMs(void);
 double BGM_ClockAnchorSec(double* nowSec);
 void Gameplay_RefreshClock(void);
+bool Gameplay_BeginRenderClock(double presentSec);
+void Gameplay_EndRenderClock(void);
+bool Window_VsyncActive(void);     /* window.c: vsync aplicado de fato */
+void Window_VsyncFailed(void);     /* o swap não bloqueia: cai no limitador */
+int  Window_GetRefreshRate(void);   /* window.c: Hz do monitor (limite sem vsync) */
 extern bool g_renderTick;           /* bga.c: false no desenho extra entre passos de 60 Hz */   /* gameplay.c: relógio das setas no instante do desenho */
 uint32_t BGM_GetDurationMs(void);
 bool BGM_HasEnded(void);
@@ -635,6 +641,19 @@ void BGM_Shutdown(void);
 
 bool Input_LoadPumpPad(void);
 void Input_LoadKeyConfig(void); /* lê piukey.cfg (teclas do pad, formato do original); chamado sozinho no 1º uso */
+void Input_SaveKeyConfig(void);
+void Input_LoadJoyConfig(void);
+void Input_SaveJoyConfig(void);
+void Input_WriteJoyConfigToIni(FILE* f);
+uint8_t Input_GetButtonKey(int player, PadButton b);
+void Input_SetButtonKey(int player, PadButton b, uint8_t code);
+void Input_GetButtonKeyName(int player, PadButton b, char* out, size_t outSize);
+void Input_GetButtonJoyName(int player, PadButton b, char* out, size_t outSize);
+void Input_ClearJoyBindings(void);
+void Input_RestoreDefaultConfig(void);
+bool Input_IsListening(void);
+void Input_StartListen(int player, PadButton b);
+void Input_CancelListen(void);
 void Input_Update(void);
 bool Input_IsPadHit(int player, PadButton button);
 bool Input_IsPadDown(int player, PadButton button);
@@ -724,6 +743,8 @@ bool Song_FindFile(int id, const char* fmt, bool hex3, char* out, size_t outSize
 const char* Song_DataIdStr(int id);
 bool ExSelect_IsXMode(void);
 unsigned ExSelect_GetFlags(void);
+void ExSelect_SetXMode(bool on);
+void Gameplay_DoubleToOwner(void);   /* Double só do P2: move os contadores para o índice dele */
 void Attract_Idle(void);            /* Exceed CIdle: próxima tela da atração */
 extern bool g_exDemo;               /* [0x568FF4] & 0x100000: demo da atração ("-demo") */
 bool Demo_SoundOn(void);            /* EEPROM +0x7F0 */

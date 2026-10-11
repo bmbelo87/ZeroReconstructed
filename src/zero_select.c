@@ -749,6 +749,10 @@ static void lateJoin(int p) {
     sfx(SFX_JOIN);
     Coin_ConsumeCredit();
     s_joined |= (1u << p);
+    /* Guarda a entrada no mesmo lugar que o título e a Station ([0x568FF4]).
+     * ZeroSelect_Enter relê essa máscara a cada estágio: sem isto, quem entrava
+     * aqui na Select jogava a música e sumia na Select seguinte (issue #28). */
+    Title_SetJoinedMask(s_joined);
     if (!twoPlayers()) return;
     int keepId = curSong() ? (int)curSong()->id : -1;
     buildList(s_ch);
@@ -818,14 +822,33 @@ static void startGame(void) {
     sfx(SFX_START);
     int speed[2];
     bool rv[2];
+    /* Um jogador só: os comandos são os de quem entrou, nos dois índices. O gameplay
+     * usa o índice 1 para o P2 em modo simples, mas o índice 0 no campo único do
+     * Double/Nightmare; antes o P2 sozinho em Double jogava com os comandos (vazios)
+     * do P1. */
+    int owner = (s_joined & 1) ? 0 : 1;
     for (int p = 0; p < 2; p++) {
-        unsigned m = s_mods[p];
+        unsigned m = s_mods[twoPlayers() ? p : owner];   /* era: s_mods[p] */
         speed[p] = (m & ZM_8X) ? 8 : (m & ZM_4X) ? 4 : (m & ZM_3X) ? 3 : (m & ZM_2X) ? 2 : 1;
         rv[p] = (m & ZM_RV) != 0;
+        /* era: só velocidade e RV chegavam ao gameplay; os demais comandos acendiam
+         * o ícone e não faziam nada, de nenhum dos lados. AC e DC não têm
+         * implementação no gameplay deste projeto e seguem sem efeito. */
+        g_game.cmdMirror[p]     = (m & ZM_MR) != 0;
+        g_game.cmdRandomStep[p] = (m & ZM_RS) != 0;
+        g_game.cmdVanish[p]     = (m & ZM_V)  != 0;
+        g_game.cmdNonStep[p]    = (m & ZM_NS) != 0;
+        g_game.cmdEarthworm[p]  = (m & ZM_EW) != 0;
+        g_game.cmdFreedom[p]    = (m & ZM_FD) != 0;
     }
+    ExSelect_SetXMode(((s_mods[0] | s_mods[1]) & ZM_X) != 0);   /* X: global */
     static const char* const k_arg[5] = { "-n", "-h", "-c", "-d", "-nm" };
-    /* só o P2 dentro: o modo é o dele (antes ia sempre o s_diff[0]) */
-    int d0 = (s_joined & 1) ? s_diff[0] : s_diff[1];
+    /* era: int d0 = (s_joined & 1) ? s_diff[0] : s_diff[1];
+     * Com um jogador só (P1 OU P2) a dificuldade fica sempre em s_diff[0] (setDiff,
+     * nextDiff, fixDiff e o UL de playerInput usam o índice 0 fora do 2P). Lendo
+     * s_diff[1], o P2 sozinho jogava a dificuldade que sobrou ali (NORMAL), e a
+     * música nem começava se ela não tivesse esse modo. */
+    int d0 = s_diff[0];
     Log_Print("ZSELECT: RUN %X %s %s\n", (unsigned)e->id, k_arg[d0],
               twoPlayers() ? k_arg[s_diff[1]] : " ");
     Movie_Close();
