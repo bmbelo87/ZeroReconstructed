@@ -89,7 +89,9 @@ static void LoadBGAForState(GameState state) {
     case STATE_STAGE_BREAK:           /* Prex3: 083.DAT + 7-1.WAV; Exceed: BGA\SB.MOV (sem .DAT) */
         bgaName = g_exceedSongIds ? "" : "083"; break;
     case STATE_DANCE_GRADE_ENTER:
-    case STATE_DANCE_GRADE_DISPLAY: bgaName = g_exceedSongIds ? "GRADE" : "83"; break; /* Exceed 0x40CD2A: BGA\GRADE.DAT */
+    case STATE_DANCE_GRADE_DISPLAY: bgaName = g_exceedSongIds ? "GRADE" : "83"; /* Exceed 0x40CD2A: BGA\GRADE.DAT */
+        if (ZeroMs_InProgress()) bgaName = "MICF";   /* MISSION: o MRESULT usa o BGA/MICF.DAT */
+        break;
     case STATE_HOWTOPLAY: bgaName = ""; break; /* limpa BGA do menu imediatamente; 03.DAT carrega no stateFrame==1 */
     case STATE_SERVICE_MENU: bgaName = ""; break; /* SETUP MENU desenha sobre fundo preto */
     default: break;
@@ -489,10 +491,17 @@ void Game_Update(float dt) {
                     if (n < 1) n = 1;
                     char path[MAX_PATH];
                     snprintf(path, sizeof(path), "%s/BGA/NST%d.MOV", g_game.currentDirectory, n);
+                    /* Zero MISSION STATION (piu, linha "BGA/NMISSION.MOV"): entre as músicas da missão */
+                    if (ZeroMs_InProgress())
+                        snprintf(path, sizeof(path), "%s/BGA/NMISSION.MOV", g_game.currentDirectory);
                     Movie_Close();
                     if (!Movie_Open(path, false))
                         Log_Print("NST: '%s' não abriu\n", path);
-                    if (g_waveSoundIds[SND_NEXTSTAGE] >= 0) {
+                    /* era: sempre NEXTSTAGE.WAV. Na missão é o EFF_TRY_NEXT_MISSION
+                     * (MISSION_NEXT.WAV, piu 0x8077c..). */
+                    if (ZeroMs_InProgress()) {
+                        ZeroMs_PlayNextSound();
+                    } else if (g_waveSoundIds[SND_NEXTSTAGE] >= 0) {
                         Audio_Stop(g_waveSoundIds[SND_NEXTSTAGE]);
                         Audio_Play(g_waveSoundIds[SND_NEXTSTAGE], false);
                     }
@@ -585,6 +594,13 @@ void Game_Update(float dt) {
                 Movie_Close();
                 if (!Movie_Open(path, false))
                     Log_Print("GAMEOVER: '%s' não abriu\n", path);  /* 0x41525D: -> IDLE (abaixo) */
+                /* Zero: o CGameOver toca o EFF_GAME_OVER = WAVE/GAMEOVER.WAV (SFX_GLOBAL.LUA).
+                 * era: sem som (regra do Exceed). */
+                {
+                    static int s_sndGO = -1;
+                    if (s_sndGO < 0) s_sndGO = Audio_LoadWaveFile("GAMEOVER.WAV");
+                    if (s_sndGO >= 0) { Audio_Stop(s_sndGO); Audio_Play(s_sndGO, false); }
+                }
                 goStart = timeGetTime();
             }
             Movie_Update(dt);

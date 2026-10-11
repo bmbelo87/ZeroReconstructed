@@ -25,8 +25,8 @@
  * EFF_MISSION_STATION T2_04, EFF_EASY_STATION T2_05, EFF_STATION_OUT SELECTED,
  * EFF_TIME_LIMIT TIME_LIMIT.
  *
- * EASY vai para a CSelectEz (zero_selectez.c). MISSION (CSelectMission) ainda não
- * existe no projeto: por enquanto segue para a Select do ARCADE.
+ * EASY vai para a CSelectEz (zero_selectez.c) e MISSION para a CSelectMission
+ * (zero_mission.c).
  */
 #include "pumpy.h"
 #include "bga.h"
@@ -286,8 +286,9 @@ void Station_Update(float dt) {
             /* a skin escolhida na EASY não acompanha o jogador para outra estação */
             if (ZeroEz_Active() && g_sel != ST_EASY) Zero_SetSkinIndex(0);
             ZeroEz_SetActive(g_sel == ST_EASY);
-            if (g_sel == ST_MISSION)
-                Log_Print("STATION: MISSION STATION ainda não existe, indo para o ARCADE\n");
+            /* era: if (g_sel == ST_MISSION) Log_Print("STATION: MISSION STATION ainda não existe, indo para o ARCADE\n");
+             * MISSION agora vai para a "SELECTMS" (zero_mission.c). */
+            ZeroMs_SetActive(g_sel == ST_MISSION);
             Movie_Close();
             BGM_Stop();
             Title_StopMusic();

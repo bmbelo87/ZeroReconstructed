@@ -36,6 +36,10 @@ void Loading_Enter(int songId) {
     /* Zero (piu 0x8081594 / 0x80825ad): TITLE/T%sH.PNZ (coreano) ou T%sE.PNZ,
      * sempre com o id da própria música. Idioma ainda fixo em inglês (E). */
     snprintf(path, sizeof(path), "%s/TITLE/T%sE.PNZ", g_game.currentDirectory, Song_IdStr(songId));
+    /* MISSION STATION: o %s é o nome do "RUN" (M011, M012...), não a música base:
+     * TITLE/TM011E.PNZ é o título da missão. */
+    if (ZeroMs_StepName())
+        snprintf(path, sizeof(path), "%s/TITLE/T%sE.PNZ", g_game.currentDirectory, ZeroMs_StepName());
     /* era (Exceed2): "%s/TITLE/T%s.pnz" com Song_DataIdStr(songId) */
     Log_Print("Loading: loading PNZ '%s'\n", path);
 
@@ -47,6 +51,10 @@ void Loading_Enter(int songId) {
         Log_Print("Loading: PNZ not found for song %d\n", songId);
     }
 
+    /* Zero MISSION STATION: a tela de título é a tela de informação da missão
+     * (piu 0x8082d30): contador e CENTER para começar. */
+    if (ZeroMs_StepName()) ZeroMs_InfoEnter();
+
     g_game.state = STATE_SONG_TITLE;
     g_game.stateFrame = 0;
     Render_SetGlobalColor(0, 0, 0, 0);
@@ -57,6 +65,11 @@ void Loading_Update(float dt) {
         int ms = (int)(dt * 1000.0f);
         if (ms < 1) ms = 1;
         g_loadingTimer -= ms;
+        /* missão: quem decide a saída é a tela de informação, não o tempo do título */
+        if (ZeroMs_StepName()) {
+            if (!ZeroMs_InfoUpdate()) return;
+            g_loadingTimer = 0;
+        }
 
         if (g_loadingTimer <= 0) {
             g_loadingTimer = LOADING_FADE_MS;
@@ -161,6 +174,7 @@ void Loading_Render(void) {
         float dy = (480.0f - dh) / 2.0f;
 
         Texture_Draw(g_pnzTexId, dx, dy, scale, scale, 1.0f);
+        if (g_game.state == STATE_SONG_TITLE && ZeroMs_StepName()) ZeroMs_InfoRender();
     } else {
         char buf[64];
         snprintf(buf, sizeof(buf), "Loading %d...", g_loadingSongId);

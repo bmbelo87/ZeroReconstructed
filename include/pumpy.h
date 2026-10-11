@@ -573,6 +573,9 @@ void Texture_Bind(int id);
 int Texture_GetWidth(int id);
 int Texture_GetHeight(int id);
 void Texture_Draw(int id, float x, float y, float scaleX, float scaleY, float alpha);
+/* como Texture_DrawUV, com alfa diferente em cima e embaixo (Vanish nos longs) */
+void Texture_DrawUVFade(int id, float x, float y, float w, float h,
+                        float u1, float v1, float u2, float v2, float alphaTop, float alphaBottom);
 void Texture_DrawUV(int id, float x, float y, float w, float h, float u1, float v1, float u2, float v2, float r, float g, float b, float alpha);
 void Texture_InsetUV(int texW, int texH, float* u1, float* v1, float* u2, float* v2); /* SMOOTH: meio texel para dentro */
 void Texture_Shutdown(void);
@@ -749,6 +752,29 @@ int  ZeroEz_SongCount(void);
 int  ZeroEz_SongId(int i);
 int  ZeroEz_SongLevel(int i);
 bool ExSelect_StartZeroEz(int id, int level, unsigned joined, int speed);
+/* zero_mission.c — CSelectMission do Zero (MISSION STATION) e a sequência das 3 músicas */
+void ZeroMs_SetActive(bool on);
+bool ZeroMs_Active(void);
+void ZeroMs_Enter(void);
+void ZeroMs_Update(float dt);
+void ZeroMs_Render(void);
+bool ZeroMs_InProgress(void);            /* há missão em curso (entre as músicas) */
+bool ZeroMs_NextSong(void);              /* avança; false = era a última */
+void ZeroMs_End(void);                   /* missão terminou (concluída ou falhou) */
+const char* ZeroMs_StepName(void);       /* "M011" etc. com missão em curso, senão NULL */
+void ZeroMs_InfoEnter(void);             /* tela de informação da missão (antes da música) */
+bool ZeroMs_InfoUpdate(void);            /* true = terminou */
+void ZeroMs_InfoRender(void);
+void ZeroMs_ResultEnter(void);           /* MRESULT / MCOMPLETE (no lugar do Dance Grade) */
+void ZeroMs_ResultUpdate(float dt);
+void ZeroMs_ResultRender(void);
+void ZeroMs_PlayNextSound(void);         /* EFF_TRY_NEXT_MISSION */
+bool ZeroMs_RankPending(void);           /* missão concluída: NAMEINPUT grava no MRANK.DAT */
+void ZeroMs_RankSave(const char* name);  /* nome de 4 letras */
+float Result_ExRatio(int p);             /* result.c: razão da nota do jogador */
+bool ExSelect_StartZeroMission(int baseId, int modeIdx, unsigned mods, unsigned joined);
+void ZeroSelect_DrawWheel(const int* list, int count, const int* texById, int cursor,
+                          int spinDir, int spin, int idxOff, float px, float py);
 int Song_BaseId(int id);            /* Zero +0x08 (0x805a460), -1 = sem base */
 bool Song_FindFile(int id, const char* fmt, bool hex3, char* out, size_t outSize); /* id, depois base */
 const char* Song_DataIdStr(int id);

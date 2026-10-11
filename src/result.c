@@ -151,6 +151,8 @@ static int exStageIdx(void) {
 }
 
 /* 0x40D0E7..0x40D2A8 */
+float Result_ExRatio(int p) { return exRatio(p); }
+
 static GameState exNextState(void) {
     float r1 = (g_game.activePlayerMask & 1) ? exRatio(0) : 0.0f;
     float r2 = (g_game.activePlayerMask & 2) ? exRatio(1) : 0.0f;
@@ -515,6 +517,8 @@ static void zDanceGradeRender(int t)
 }
 
 void Result_Enter(void) {
+    /* Zero MISSION STATION: "MRESULT" no lugar do "GRADE" (piu 0x8083bf0) */
+    if (ZeroMs_InProgress()) { BGM_Stop(); ZeroMs_ResultEnter(); return; }
     g_resultFrame = 0;
     g_exT = 0;
     g_lastDigitSoundCount = 0;
@@ -558,6 +562,7 @@ void Result_Enter(void) {
 }
 
 void Result_Update(float dt) {
+    if (ZeroMs_InProgress()) { ZeroMs_ResultUpdate(dt); return; }
     if (g_exceedSongIds) {
         if (g_game.state == STATE_DANCE_GRADE_ENTER) {
             /* Zero: sem a introdução de 60 quadros do Exceed (0x40CF34) */
@@ -626,6 +631,7 @@ void Result_Update(float dt) {
 }
 
 void Result_Render(void) {
+    if (ZeroMs_InProgress()) { ZeroMs_ResultRender(); return; }
     if (g_exceedSongIds) {
         if (g_game.bgaPicCount <= 0) return;
         if (g_game.state == STATE_DANCE_GRADE_ENTER) {

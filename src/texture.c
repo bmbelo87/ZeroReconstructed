@@ -907,6 +907,42 @@ void Texture_DrawUV(int id, float x, float y, float w, float h,
     glEnd();
 }
 
+/* Igual a Texture_DrawUV, mas o alfa é por vértice: alphaTop na borda de cima do
+ * quad (y) e alphaBottom na de baixo (y + h). Usado pelo Vanish nos longs, em que
+ * cada trecho do corpo tem o alfa da sua altura na tela. */
+void Texture_DrawUVFade(int id, float x, float y, float w, float h,
+                        float u1, float v1, float u2, float v2, float alphaTop, float alphaBottom) {
+    if (id < 0 || id >= MAX_TEXTURES || !g_game.textures[id].inUse) return;
+    Texture* t = &g_game.textures[id];
+    float yUp = 480.0f - y - h;
+
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, t->id);
+    float texW = (float)t->width;
+    float texH = (float)t->height;
+    if (texW <= 0) texW = 256.0f;
+    if (texH <= 0) texH = 256.0f;
+    float nu1 = u1 / texW, nv1 = v1 / texH, nu2 = u2 / texW, nv2 = v2 / texH;
+    float du = u2 - u1, dv = v2 - v1;
+    if (du < 0) du = -du;
+    if (dv < 0) dv = -dv;
+    if (fabsf(du - w) > 0.01f || fabsf(dv - h) > 0.01f)
+        Texture_InsetUV((int)texW, (int)texH, &nu1, &nv1, &nu2, &nv2);
+    glBegin(GL_QUADS);
+    glColor4f(1, 1, 1, alphaBottom);
+    glTexCoord2f(nu1, nv2);
+    glVertex2f(x, yUp);
+    glTexCoord2f(nu2, nv2);
+    glVertex2f(x + w, yUp);
+    glColor4f(1, 1, 1, alphaTop);
+    glTexCoord2f(nu2, nv1);
+    glVertex2f(x + w, yUp + h);
+    glTexCoord2f(nu1, nv1);
+    glVertex2f(x, yUp + h);
+    glEnd();
+    glColor4f(1, 1, 1, 1);
+}
+
 void Texture_Draw(int id, float x, float y, float scaleX, float scaleY, float alpha) {
     if (id < 0 || id >= MAX_TEXTURES || !g_game.textures[id].inUse) return;
     Texture* t = &g_game.textures[id];

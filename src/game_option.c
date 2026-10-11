@@ -96,7 +96,13 @@ void GameOption_Load(void)
             Log_Print("GameOption: imported legacy PUMPY.INI into pumpprex3.ini\n");
         Eeprom_Save();
     }
-    loadIni(false);
+    /* era: loadIni(false);  — sem o arquivo, nada o criava até alguém salvar pelo menu
+     * de operador, e não havia onde editar o AudioOffset. Agora o PUMPY.INI é criado
+     * com os valores padrão na primeira execução. */
+    if (!loadIni(false)) {
+        GameOption_Save();
+        Log_Print("GameOption: PUMPY.INI não existia; criado com os valores padrão\n");
+    }
     Log_Print("GameOption: loaded (diff=%d sb=%d help=%d audio=%dms)\n",
               g_game.optionDifficulty, g_game.optionToggle1, g_game.optionToggle2,
               g_game.audioOffsetMs);

@@ -753,7 +753,10 @@ static void rsShuffleDN(StepChart* chart)
             if (!occ[i]) dst[dc++] = i;
         }
 
-        shuffleIntArr(src, sc);
+        /* era: shuffleIntArr(src, sc);  — embaralhava as ORIGENS e gravava nos destinos
+         * em ordem crescente: toda nota ia para os primeiros painéis livres (Z, depois Q).
+         * Como no Single (rsShuffleSingle), o que se embaralha são os DESTINOS. */
+        shuffleIntArr(dst, dc);
         for (int i = 0; i < sc; i++) {
             int s = src[i], d = dst[i];
             o[d] = v[s];
@@ -796,7 +799,10 @@ static void rsShuffleHD(StepChart* chart)
             if (!occ[i]) dst[dc++] = i;
         }
 
-        shuffleIntArr(src, sc);
+        /* era: shuffleIntArr(src, sc);  — embaralhava as ORIGENS e gravava nos destinos
+         * em ordem crescente: toda nota ia para os primeiros painéis livres (Z, depois Q).
+         * Como no Single (rsShuffleSingle), o que se embaralha são os DESTINOS. */
+        shuffleIntArr(dst, dc);
         for (int i = 0; i < sc; i++) {
             int s = src[i], d = dst[i];
             o[d] = v[s];
@@ -808,19 +814,88 @@ static void rsShuffleHD(StepChart* chart)
     }
 }
 
+/* ── Random Step como no código-fonte do Exceed 1 (playengine.cpp) ───────────
+ * CPlayEngine::StepRandom / StepRandomRange(start, end), colunas 0..9 da linha:
+ *   Single P1 = 0..4, P2 = 5..9; Double/Nightmare = 0..9; HalfDouble = 2..7.
+ * Por linha, dentro da faixa:
+ *   - nenhuma parte de long (StepCheckLongLineCnt == 0): 5 trocas de duas colunas
+ *     sorteadas (cada sorteio = start + rand() % largura; a mesma coluna pode sair
+ *     duas vezes e a troca não muda nada);
+ *   - senão, para cada coluna com o COMEÇO de um long, e só se a linha tiver
+ *     exatamente uma parte de long: sorteia uma coluna e troca as duas colunas
+ *     inteiras, linha a linha, até a primeira linha sem long (o long muda de
+ *     coluna inteiro; as outras notas dessas linhas trocam junto).
+ * O original percorre bloco a bloco; aqui o chart já é uma lista única de linhas.
+ * (Regra do Zero ainda não conferida no piu; usada a do Exceed a pedido do usuário.) */
+static uint8_t* rsCell(StepRow* row, int col)
+{
+    StepHalf* h = (col < 5) ? &row->half1 : &row->half2;
+    switch (col % 5) {
+    case 0: return &h->dl;
+    case 1: return &h->ul;
+    case 2: return &h->cn;
+    case 3: return &h->ur;
+    default: return &h->dr;
+    }
+}
+
+static int rsLongCnt(StepRow* row, int start, int end)   /* StepCheckLongLineCnt */
+{
+    int cnt = 0;
+    for (int c = start; c <= end; c++) {
+        uint8_t v = *rsCell(row, c);
+        if (v == NT_HOLD_H || v == NT_HOLD_B || v == NT_HOLD_T) cnt++;
+    }
+    return cnt;
+}
+
+static void rsSwap(StepRow* row, int a, int b)           /* StepSwap */
+{
+    uint8_t* pa = rsCell(row, a);
+    uint8_t* pb = rsCell(row, b);
+    uint8_t t = *pa; *pa = *pb; *pb = t;
+}
+
+static void rsRandomRange(StepChart* chart, int start, int end)
+{
+    int w = end - start + 1;
+    for (uint32_t k = 0; k < chart->rowCount; k++) {
+        StepRow* row = &chart->rows[k];
+        if (rsLongCnt(row, start, end) == 0) {
+            for (int n = 0; n < 5; n++) {
+                int a = start + rand() % w;
+                int b = start + rand() % w;
+                rsSwap(row, a, b);
+            }
+        } else {
+            for (int c = start; c <= end; c++) {
+                if (*rsCell(row, c) == NT_HOLD_H && rsLongCnt(row, start, end) == 1) {
+                    int d = start + rand() % w;
+                    for (uint32_t t = k; t < chart->rowCount; t++) {
+                        if (rsLongCnt(&chart->rows[t], start, end) == 0) break;
+                        rsSwap(&chart->rows[t], c, d);
+                    }
+                }
+            }
+        }
+    }
+}
+
 void Step_ApplyRandomShuffle(StepChart* chart, int panelMode, bool shuffleP1, bool shuffleP2)
 {
     if (!chart || !chart->rows || chart->rowCount == 0) return;
 
+    /* era: rsShuffleDN / rsShuffleHD / rsShuffleSingle (permutação inventada no port,
+     * preservada acima). Agora a regra do Exceed 1. */
     if (panelMode == 1) {
-        rsShuffleDN(chart);
-        Log_Print("RS DN: per-row random, rows=%u\n", chart->rowCount);
+        rsRandomRange(chart, 0, 9);
+        Log_Print("RS DN (StepRandomRange 0..9) rows=%u\n", chart->rowCount);
     } else if (panelMode == 2) {
-        rsShuffleHD(chart);
-        Log_Print("RS HD: per-row random, rows=%u\n", chart->rowCount);
+        rsRandomRange(chart, 2, 7);
+        Log_Print("RS HD (StepRandomRange 2..7) rows=%u\n", chart->rowCount);
     } else {
-        if (shuffleP1) rsShuffleSingle(chart, 0);
-        if (shuffleP2) rsShuffleSingle(chart, 1);
-        Log_Print("RS Single: per-row P1=%d P2=%d rows=%u\n", shuffleP1, shuffleP2, chart->rowCount);
+        if (shuffleP1) rsRandomRange(chart, 0, 4);
+        if (shuffleP2) rsRandomRange(chart, 5, 9);
+        Log_Print("RS Single (StepRandomRange) P1=%d P2=%d rows=%u\n", shuffleP1, shuffleP2, chart->rowCount);
     }
 }

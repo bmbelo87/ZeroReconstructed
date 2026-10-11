@@ -881,6 +881,61 @@ bool ExSelect_StartZeroEz(int id, int level, unsigned joined, int speed)
     return true;
 }
 
+/* Zero CSelectMission (piu 0x8079d50): "RUN M%s1 <modo>". A música base dá o
+ * áudio/vídeo/título; o chart vem do STEP/M*.STX (ZeroMs_StepName, gameplay.c).
+ * mods = comandos forçados, na numeração da tabela de missões (ver abaixo). */
+bool ExSelect_StartZeroMission(int baseId, int modeIdx, unsigned mods, unsigned joined)
+{
+    int s = findSong(baseId);
+    if (s < 0 || modeIdx < 0 || modeIdx > 4) {
+        Log_Print("ZSELECTMS: música base %X fora da tabela\n", (unsigned)baseId);
+        return false;
+    }
+    g_game.selectedSongIndex = Song_FindByID(&g_game.songDB, baseId);
+    g_game.selectedModeIndex = Song_FindMode(&g_game.songDB, k_dbModeName[modeIdx]);
+    if (g_game.selectedSongIndex < 0 || g_game.selectedModeIndex < 0) {
+        Log_Print("ZSELECTMS: songDB sem a música/modo (%d/%d)\n",
+                  g_game.selectedSongIndex, g_game.selectedModeIndex);
+        return false;
+    }
+    g_game.selectedDifficulty = g_exSongs[s].level[modeIdx] > 0 ? g_exSongs[s].level[modeIdx] : 0;
+    /* um jogador só (a Station tira a MISSION da roda com 2) */
+    g_game.activePlayerMask = (joined & 1) ? 1 : 2;
+    g_game.selectedModeIndexP2 = -1;
+    g_game.isBattleMode = false;
+    /* era: os bits eram lidos como os de +0x1F0 da CSelect (0x20 = V, 0x80 = RS,
+     * 0x100 = NS, 0x1000 = EW, 0x20000 = X...). ERRADO: a tabela de missões tem a
+     * sua própria numeração, traduzida em 0x080536c0:
+     *   0x02 2X · 0x04 3X · 0x08 4X · 0x10 8X · 0x20 RS · 0x40 MR · 0x80 V ·
+     *   0x100 EW · 0x200 FD · 0x400 RV · 0x800 X · 0x1000 AC · 0x2000 NS ·
+     *   skin: 0x4000 "0" · 0x8000 "1" · 0x10000 "2" · 0x20000 "3" · 0x40000 "4" ·
+     *   0x80000 "5" (sem nenhum desses: "0").
+     * AC não tem efeito no gameplay deste projeto. */
+    for (int p = 0; p < 2; p++) {
+        g_game.cmdSpeedMult[p]      = (mods & 0x10) ? 8 : (mods & 0x08) ? 4 : (mods & 0x04) ? 3 : (mods & 0x02) ? 2 : 1;
+        g_game.cmdRandomStep[p]     = (mods & 0x20) != 0;
+        g_game.cmdMirror[p]         = (mods & 0x40) != 0;
+        g_game.cmdVanish[p]         = (mods & 0x80) != 0;
+        g_game.cmdEarthworm[p]      = (mods & 0x100) != 0;
+        g_game.cmdFreedom[p]        = (mods & 0x200) != 0;
+        g_game.cmdRandomVelocity[p] = (mods & 0x400) != 0;
+        g_game.cmdNonStep[p]        = (mods & 0x2000) != 0;
+    }
+    ExSelect_SetXMode((mods & 0x800) != 0);
+    {
+        int skin = 0;
+        if (mods & 0x8000)  skin = 1;
+        if (mods & 0x10000) skin = 2;
+        if (mods & 0x20000) skin = 3;
+        if (mods & 0x40000) skin = 4;
+        if (mods & 0x80000) skin = 5;
+        Zero_SetSkinIndex(skin);
+    }
+    g_exDemo = false;
+    Loading_Enter(baseId);
+    return true;
+}
+
 /* Comando RUN/PLAY do console (parser 0x401A0A..0x401D56): "<id> <modo> [-demo|-demo2]".
  * Entra direto no gameplay, sem passar pela Select. m = índice de k_dbModeName ou
  * EX_MODE_BATTLE (-bt), que usa a última dificuldade disponível entre N/H/C.

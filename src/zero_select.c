@@ -375,6 +375,8 @@ static void setChannel(int ch) {
 
 static void resetHistory(int p) { s_histLen[p] = 0; }
 
+static bool s_extraCode;   /* pushCode reconheceu o código extra do port (TestBGA) */
+
 /* 0x804f370 + 0x804f3b0: guarda o passo e testa as sequências na ordem */
 static int pushCode(int p, int button) {
     if (s_histLen[p] == CODE_HIST) {
@@ -397,6 +399,7 @@ static int pushCode(int p, int button) {
         resetHistory(p);
         g_game.cmdTestBGA[p] = true;
         InitS();
+        s_extraCode = true;   /* avisa o playerInput: este CENTER fechou um código */
         Log_Print("ZSELECT P%d: TestBGA ON\n", p + 1);
     }
     return -1;
@@ -596,22 +599,26 @@ static void zeroOrtho(void) {   /* 0x80a75f0 */
  * eles, num arco de raio 174 inclinado -75° em X. Constantes 0x0811cb2c..38 e
  * 0x08100430..0x08100540. */
 static const float k_spinTab[8] = { 0.0f, 0.3878f, 1.38775f, 2.7552f, 4.2448f, 5.61225f, 6.6122f, 7.0f };
-static void drawWheel(int spin, int idxOff, float px, float py) {
-    if (s_count <= 0) return;
+/* era: static void drawWheel(spin, idxOff, px, py), só com a lista do ARCADE.
+ * A roda da CSelectMission (0x807a920) é a mesma conta; a parte comum virou
+ * ZeroSelect_DrawWheel, com a lista, as texturas e o cursor por parâmetro. */
+void ZeroSelect_DrawWheel(const int* list, int count, const int* texById, int cursor,
+                          int spinDir, int spin, int idxOff, float px, float py) {
+    if (count <= 0) return;
     const float R = -174.0f, discW = 43.8003006f;
     glPushMatrix();
     zeroPerspective(15.0f);
     glTranslatef(px + 320.0f, (25.0f - (0.5f * R + 200.0f)) + py, 0.0f);
     glRotatef(-75.0f, 1.0f, 0.0f, 0.0f);
-    int off = (s_spinDir == 1) ? idxOff - 1 : idxOff;
+    int off = (spinDir == 1) ? idxOff - 1 : idxOff;
     glEnable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     for (int k = -3; k < 4; k++) {
-        int c = s_cursor[s_ch] + k + off;
-        while (c < 0) c += s_count;
-        while (c >= s_count) c -= s_count;
-        int tex = s_bannerTex[s_list[c]];
+        int c = cursor + k + off;
+        while (c < 0) c += count;
+        while (c >= count) c -= count;
+        int tex = texById[list[c]];
         if (tex >= 0) Texture_Bind(tex);
         else glBindTexture(GL_TEXTURE_2D, 0);
         glColor4f(1, 1, 1, 1);
@@ -631,11 +638,16 @@ static void drawWheel(int spin, int idxOff, float px, float py) {
     zeroOrtho();
 }
 
+static void drawWheel(int spin, int idxOff, float px, float py) {
+    ZeroSelect_DrawWheel(s_list, s_count, s_bannerTex, s_cursor[s_ch], s_spinDir, spin, idxOff, px, py);
+}
+
 /* ---------------------------------------------------------------------------
  * Begin (0x806a7a0)
  * ------------------------------------------------------------------------- */
 void ZeroSelect_Enter(void) {
     if (ZeroEz_Active()) { ZeroEz_Enter(); return; }   /* EASY STATION: CSelectEz */
+    if (ZeroMs_Active()) { ZeroMs_Enter(); return; }   /* MISSION STATION: CSelectMission */
     initUnlocks();
     Title_StopMusic();
     Movie_Close();
@@ -862,18 +874,24 @@ static void startGame(void) {
 static void playerInput(int p) {
     bool joined = (s_joined & (1u << p)) != 0;
     static const PadButton k_pad[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
+    bool codeC = false;   /* o CENTER deste quadro fechou um código */
     if (joined) {
         for (int k = 0; k < 5; k++)
             if (Input_IsPadHit(p, k_pad[k])) {
+                s_extraCode = false;
                 int code = pushCode(p, 7 + k);
                 if (code >= 0) {
                     s_ready = false;
                     sfx(SFX_HIDDEN);
                     applyCode(p, code);
                 }
+                if ((code >= 0 || s_extraCode) && k_pad[k] == PAD_C) codeC = true;
             }
     }
-    if (Input_IsPadHit(p, PAD_C)) {
+    /* era: if (Input_IsPadHit(p, PAD_C)) — o CENTER que fechava um código também caía
+     * aqui e já deixava a música pronta para confirmar. Pedido do usuário (igual à NX):
+     * esse CENTER pertence ao código; a confirmação só vem com um CENTER dado depois. */
+    if (Input_IsPadHit(p, PAD_C) && !codeC) {
         if (!joined) { lateJoin(p); return; }
         sfx(SFX_SELECT);
         if (!s_ready || !diffOk(curSongIdx())) {
@@ -915,6 +933,7 @@ static void playerInput(int p) {
 
 void ZeroSelect_Update(float dt) {
     if (ZeroEz_Active()) { ZeroEz_Update(dt); return; }
+    if (ZeroMs_Active()) { ZeroMs_Update(dt); return; }
     if (s_started) return;
     s_frame++;
 
@@ -962,6 +981,7 @@ void ZeroSelect_Update(float dt) {
 
 void ZeroSelect_Render(void) {
     if (ZeroEz_Active()) { ZeroEz_Render(); return; }
+    if (ZeroMs_Active()) { ZeroMs_Render(); return; }
     if (g_game.bgaPicCount < 4) return;
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

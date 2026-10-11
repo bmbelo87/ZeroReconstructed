@@ -128,11 +128,37 @@ static void bindTex(int t)
     glBindTexture(GL_TEXTURE_2D, g_game.textures[t].id);
 }
 
+/* Zero: o BGA/BFONT.DAT não tem o atlas "bfont.tga" (8x8) do Exceed; traz uma
+ * imagem por caractere, "bfont00".."bfont63" (o mesmo índice da grade). Sem isto
+ * nenhuma letra aparecia. */
+static int g_bfontGlyph[64];
+static bool g_bfontGlyphs;      /* true = usar g_bfontGlyph */
+
+/* sons do CNameInput do Zero (SCRIPT/UI/COMMON/SFX_NAMEINPUT.LUA; piu 0x8072...):
+ * EFF_NAME_INPUT T2_11.WAV (voz, no Begin), EFF_MOVE 3-2.WAV, EFF_MOVE_ACC 10-2.WAV,
+ * EFF_HIDDEN_SELECTED 2-1.WAV; música AUDIO/085.AUD. */
+enum { NIS_VOICE, NIS_MOVE, NIS_MOVE_ACC, NIS_DONE, NIS_COUNT };
+static const char* const k_niSnd[NIS_COUNT] = { "T2_11.WAV", "3-2.WAV", "10-2.WAV", "2-1.WAV" };
+static int s_niSnd[NIS_COUNT] = { -1, -1, -1, -1 };
+static void niSfx(int k) { if (s_niSnd[k] >= 0) Audio_Play(s_niSnd[k], false); }
+
 /* _BFontPutCharCenterPivot: bfont.tga 8x8, célula 128/1024 */
 static void bfontCenter(float x, float y, int ch, float w, float h)
 {
     int v = cnvCharToValue(ch);
-    if (v == BLOCK_MAX || g_bfontTex < 0) return;
+    if (v == BLOCK_MAX) return;
+    if (g_bfontGlyphs) {
+        if (v < 0 || v >= 64 || g_bfontGlyph[v] < 0) return;
+        bindTex(g_bfontGlyph[v]);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0, 0); glVertex2f(x - w / 2, y + h / 2);
+        glTexCoord2f(0, 1); glVertex2f(x - w / 2, y - h / 2);
+        glTexCoord2f(1, 1); glVertex2f(x + w / 2, y - h / 2);
+        glTexCoord2f(1, 0); glVertex2f(x + w / 2, y + h / 2);
+        glEnd();
+        return;
+    }
+    if (g_bfontTex < 0) return;
     bindTex(g_bfontTex);
     float u0 = (float)(v % 8) / 8.0f, v0 = (float)(v / 8) / 8.0f;
     float u1 = u0 + 0.125f, v1 = v0 + 0.125f;
@@ -250,6 +276,12 @@ static void NameInput_Enter(void)
 
     g_flag[0] = (g_game.activePlayerMask & 1) && hsGetGrade(g_exIrTotal[0]) != -1;
     g_flag[1] = (g_game.activePlayerMask & 2) && hsGetGrade(g_exIrTotal[1]) != -1;
+    /* Zero MISSION STATION: depois do MCOMPLETE o nome é sempre pedido (não há teste
+     * de pontuação) e vai para o ranking de missões (zero_mission.c). */
+    if (ZeroMs_RankPending()) {
+        g_flag[0] = (g_game.activePlayerMask & 1) != 0;
+        g_flag[1] = !g_flag[0];
+    }
     if (!g_flag[0] && !g_flag[1]) {                      /* 0x413FD8 */
         Resource_ClearBGA();
         Game_ChangeState(STATE_IR);
@@ -262,11 +294,31 @@ static void NameInput_Enter(void)
     if (RES_Open(path)) {
         static const char* k_if[4] = { "font1.tga", "font2.tga", "font3.tga", "font4.tga" };
         g_bfontTex = loadTextureFromRES("bfont.tga");
+        g_bfontGlyphs = false;
+        if (g_bfontTex < 0) {                            /* Zero: bfont00..bfont63 */
+            int ok = 0;
+            for (int i = 0; i < 64; i++) {
+                char nm[16];
+                snprintf(nm, sizeof(nm), "bfont%02d.tga", i);
+                g_bfontGlyph[i] = loadTextureFromRES(nm);
+                if (g_bfontGlyph[i] >= 0) ok++;
+            }
+            g_bfontGlyphs = ok > 0;
+            Log_Print("NAMEINPUT: %d/64 letras do BFONT.DAT\n", ok);
+        }
         for (int i = 0; i < 4; i++) g_ifontTex[i] = loadTextureFromRES(k_if[i]);
         g_timerTex = g_ifontTex[3];
         RES_Close();
     }
-    if (g_bfontTex < 0) Log_Print("NAMEINPUT: BFONT.DAT não carregou\n");
+    if (g_bfontTex < 0 && !g_bfontGlyphs) Log_Print("NAMEINPUT: BFONT.DAT não carregou\n");
+
+    /* Zero: sons próprios, a voz "Enter your name" e a música da tela */
+    for (int k = 0; k < NIS_COUNT; k++)
+        if (s_niSnd[k] < 0) s_niSnd[k] = Audio_LoadWaveFile(k_niSnd[k]);
+    snprintf(path, sizeof(path), "%s/AUDIO/085.AUD", g_game.currentDirectory);
+    BGM_Stop();
+    if (BGM_LoadAUDDirect(path)) BGM_Play(true);         /* 0x805fb30(.., 1) */
+    niSfx(NIS_VOICE);                                    /* EFF_NAME_INPUT */
 
     memset(g_name, ' ', sizeof(g_name));
     g_name[0][4] = g_name[1][4] = '\0';
@@ -277,9 +329,19 @@ static void NameInput_Enter(void)
 static void finishPlayer(void)
 {
     char* nm = g_name[g_curPlayer];
-    if (g_waveSoundIds[SND_START] >= 0) Audio_Play(g_waveSoundIds[SND_START], false); /* EFF_HIDDEN_SELECTED (HIPÓTESE: START.WAV) */
+    /* era: g_waveSoundIds[SND_START] (hipótese START.WAV); no Zero o EFF_HIDDEN_SELECTED é o 2-1.WAV */
+    niSfx(NIS_DONE);
     if (nm[0] == ' ' && nm[1] == ' ' && nm[2] == ' ' && nm[3] == ' ')
         memcpy(nm, "PUMP", 4);
+    /* era: sempre hsAddScore. Na missão o nome vai para o MRANK.DAT (piu: NAMEINPUT
+     * com a estação 2 chama 0x805bf30) e a tela seguinte é o GAMEOVER. */
+    if (ZeroMs_RankPending()) {
+        ZeroMs_RankSave(nm);
+        BGM_Stop();
+        Resource_ClearBGA();
+        Game_ChangeState(STATE_GAMEOVER_ENTER);
+        return;
+    }
     hsAddScore(g_exIrTotal[g_curPlayer], nm);
 
     bool two = (g_game.activePlayerMask & 3) == 3;
@@ -288,14 +350,16 @@ static void finishPlayer(void)
         resetForPlayer(1);
         return;
     }
+    BGM_Stop();
     Resource_ClearBGA();
     Game_ChangeState(two ? STATE_GAMEOVER_ENTER : STATE_IR);
 }
 
 static void playMove(void)
 {
-    int s = g_accel > 2 ? SND_10_2 : SND_PUSHPANEL;      /* EFF_NAME_REPEAT / EFF_MENU_PUSH_FOOT_PANEL (HIPÓTESE) */
-    if (g_waveSoundIds[s] >= 0) Audio_Play(g_waveSoundIds[s], false);
+    /* era: g_waveSoundIds[SND_10_2 / SND_PUSHPANEL] (hipótese do Exceed); no Zero são
+     * EFF_MOVE_ACC (10-2.WAV) e EFF_MOVE (3-2.WAV) */
+    niSfx(g_accel > 2 ? NIS_MOVE_ACC : NIS_MOVE);
 }
 
 void NameInput_Update(float dt)

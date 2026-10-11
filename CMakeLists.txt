@@ -159,6 +159,7 @@ add_executable(Pumpy
     src/zero_songs.c
     src/zero_select.c
     src/zero_selectez.c
+    src/zero_mission.c
     src/service_menu.c
     src/coin.c
     src/debug_console.c

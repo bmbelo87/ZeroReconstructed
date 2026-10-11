@@ -640,6 +640,24 @@ static void exLoadSkin(void)
 /* Zero 0x8087520: corpo skinN_l2 esticado (UV inteiro) da base da cabeça ao topo
  * da ponta; ponta skinN_l3 inteira; distância < 64 -> só a parte de baixo da
  * ponta (0x809e0d0). yh/yt = centros das setas (Y para baixo). */
+/* Vanish como no código-fonte do Exceed 1 (playengine.cpp, DrawStep):
+ *     _fade = ((480 - PUMP_ARROW_Y*4 + 16) - m_CurYScreen) / PUMP_ARROW_Y    (PUMP_ARROW_Y = 60)
+ * com m_CurYScreen = ORG_Y(378) - distância, Y para cima. Em distância da linha até a
+ * step zone (d, em px): alfa = (d - 122) / 60, mínimo 0. Ou seja: a nota vem visível,
+ * começa a sumir a 182 px da step zone e some de vez a 122 px.
+ * No X1 o alfa é da LINHA inteira, então cada parte do long some na sua altura; aqui o
+ * corpo é um quad só, e o alfa vai por vértice (Texture_DrawUVFade).
+ * era (herdado do Prex3): fade = (y - 122) / 84, com y absoluto na tela. */
+static float vanishAlpha(float d)
+{
+    float a = (d - 122.0f) / 60.0f;
+    return a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+}
+
+/* vanishRef = Y do centro da step zone quando o Vanish está ligado; < 0 = sem Vanish */
+static float s_holdVanishRef = -1.0f;
+#define HOLD_A(yy) (s_holdVanishRef < 0.0f ? 1.0f : vanishAlpha((yy) - s_holdVanishRef))
+
 static void zeroHoldDraw(int panel, int col, float left, float yh, float yt, bool held)
 {
     (void)panel;
@@ -654,15 +672,19 @@ static void zeroHoldDraw(int panel, int col, float left, float yh, float yt, boo
      * da step zone (y = 32 da seta do receptor), não da base da cabeça */
     float headBase = held ? yh : yh + 32.0f, tailTop = yt - 32.0f, tailBase = yt + 32.0f;
     if (tailTop > headBase) {
-        Texture_DrawUV(bt->texId, left, headBase, (float)bt->srcW, tailTop - headBase,
-                       bt->u1 * bw, bt->v1 * bh, bt->u2 * bw, bt->v2 * bh, 1, 1, 1, 1);
-        Texture_DrawUV(tt->texId, left, tailTop, (float)tt->srcW, (float)tt->srcH,
-                       tt->u1 * tw, tt->v1 * th, tt->u2 * tw, tt->v2 * th, 1, 1, 1, 1);
+        /* era: Texture_DrawUV(..., 1, 1, 1, 1) — o long ignorava o Vanish */
+        Texture_DrawUVFade(bt->texId, left, headBase, (float)bt->srcW, tailTop - headBase,
+                           bt->u1 * bw, bt->v1 * bh, bt->u2 * bw, bt->v2 * bh,
+                           HOLD_A(headBase), HOLD_A(tailTop));
+        Texture_DrawUVFade(tt->texId, left, tailTop, (float)tt->srcW, (float)tt->srcH,
+                           tt->u1 * tw, tt->v1 * th, tt->u2 * tw, tt->v2 * th,
+                           HOLD_A(tailTop), HOLD_A(tailTop + (float)tt->srcH));
     } else if (tailBase > headBase) {
         float frac = (tailBase - headBase) / 64.0f;
         float vTop = tt->v2 - frac * (tt->v2 - tt->v1);
-        Texture_DrawUV(tt->texId, left, headBase, (float)tt->srcW, tailBase - headBase,
-                       tt->u1 * tw, vTop * th, tt->u2 * tw, tt->v2 * th, 1, 1, 1, 1);
+        Texture_DrawUVFade(tt->texId, left, headBase, (float)tt->srcW, tailBase - headBase,
+                           tt->u1 * tw, vTop * th, tt->u2 * tw, tt->v2 * th,
+                           HOLD_A(headBase), HOLD_A(tailBase));
     }
 }
 
@@ -824,6 +846,10 @@ static bool loadChartForSong(int songId, int diffTier, const char* modeName)
     char stxPath[MAX_PATH];
     snprintf(stxPath, sizeof(stxPath), "%s/STEP/%s.STX",
              g_game.currentDirectory, Song_DataIdStr(songId));
+    /* Zero MISSION STATION ("RUN M%s1 ..."): o chart é STEP/M<missão><música>.STX;
+     * áudio, vídeo e título continuam vindo da música base (zero_mission.c). */
+    if (ZeroMs_StepName())
+        snprintf(stxPath, sizeof(stxPath), "%s/STEP/%s.STX", g_game.currentDirectory, ZeroMs_StepName());
 
     Log_Print("GP: loading '%s' (song %d, mode=%s)\n", stxPath, songId, modeName ? modeName : "?");
 
@@ -1408,6 +1434,113 @@ static void applyRowJudgment(int p, JudgeType jt)
  *     as setas, GOOD/BAD deixam elas subindo;
  *   - passou da janela de BAD com nota sem pisar: todas marcadas e UM MISS.
  * ------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------
+ * Zero MISSION STATION: itens das missões. Os charts M*.STX trazem, além das setas,
+ * células com (referência: a implementação da NX, nx gameplay.c, e o script do Zero
+ * SCRIPT/NORMALMODE.LUA, função SetJudge, com julgamento = nota - 11):
+ *   0x19 (25) mina      skin_min.spr   UserJudge 6: vida = min(vida, 1000) - 500 e
+ *                                      gauge_factor += gauge_miss_factor; EFF_ITEM_MINE
+ *                                      (WAVE/B09.WAV)
+ *   0x1e (30) velocidade skin_vel.spr  ItemProc(VELOCITY, 0)  -> 2X
+ *   0x20 (32) 3X        skin_3x.spr    ItemProc(VELOCITY, 4)  -> 3X
+ *   0x21 (33) 4X        skin_4x.spr    ItemProc(VELOCITY, 1)  -> 4X
+ *   0x22 (34) 8X        skin_8x.spr    ItemProc(VELOCITY, 2)  -> 8X
+ * Sprites no BGA/MICON.DAT (piu 0x80811b0). Os valores de velocidade de cada item
+ * vêm da NX (0x807122c); o ItemProc do Zero não foi lido.
+ * Como na NX, os itens saem da grade na carga (o julgamento de setas nunca os vê:
+ * não dão MISS nem combo) e são coletados se o painel for pisado com a linha
+ * dentro da janela. Tabela [linha * 10 + coluna], colunas 5..9 = metade 2.
+ * g_msMines = minas pisadas: é o contador que várias condições de missão exigem
+ * igual a 0 (jogador +0x34; interpretação provável).
+ * ------------------------------------------------------------------------- */
+static uint8_t* g_msItem;
+static int g_msItemSpr[5] = { -1, -1, -1, -1, -1 };   /* min, vel, 3x, 4x, 8x */
+static int g_msMines[2];
+static int g_msWhite[2];   /* tela branca da mina: 50 quadros (NX +0x4ec; mesmo efeito no Zero, confirmado pelo usuário) */
+static int g_msSndMine = -1;
+int Gameplay_MissionMines(int p) { return (p == 0 || p == 1) ? g_msMines[p] : 0; }
+
+static int msItemIndex(uint8_t v) {
+    switch (v) {
+    case 0x19: return 0;
+    case 0x1e: return 1;
+    case 0x20: return 2;
+    case 0x21: return 3;
+    case 0x22: return 4;
+    default:   return -1;
+    }
+}
+
+/* tira os itens da grade (chamado depois do Mirror / Random Step, que os embaralham
+ * junto com as setas, como no original) */
+static void msItemsExtract(void)
+{
+    free(g_msItem); g_msItem = NULL;
+    g_msMines[0] = g_msMines[1] = 0;
+    g_msWhite[0] = g_msWhite[1] = 0;
+    for (int i = 0; i < 5; i++) g_msItemSpr[i] = -1;
+    if (!g_chart || !ZeroMs_StepName()) return;
+    g_msItem = (uint8_t*)calloc((size_t)g_chart->rowCount * 10, 1);
+    if (!g_msItem) return;
+    int n[5] = { 0 };
+    for (uint32_t r = 0; r < g_chart->rowCount; r++) {
+        uint8_t* h[2] = { (uint8_t*)&g_chart->rows[r].half1, (uint8_t*)&g_chart->rows[r].half2 };
+        for (int k = 0; k < 2; k++)
+            for (int i = 0; i < 5; i++) {
+                int it = msItemIndex(h[k][i]);
+                if (it < 0) continue;
+                g_msItem[r * 10 + k * 5 + i] = h[k][i];
+                h[k][i] = 0;
+                n[it]++;
+            }
+    }
+    static const char* const k_spr[5] = { "skin_min.spr", "skin_vel.spr", "skin_3x.spr", "skin_4x.spr", "skin_8x.spr" };
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s/BGA/MICON.DAT", g_game.currentDirectory);
+    if (RES_Open(path)) {
+        for (int i = 0; i < 5; i++) {
+            int start = g_game.sprTileCount;
+            SPR_LoadSPR(k_spr[i], NULL, NULL, NULL);
+            if (g_game.sprTileCount > start) g_msItemSpr[i] = start;
+        }
+        RES_Close();
+    } else {
+        Log_Print("MISSION: falha ao abrir '%s'\n", path);
+    }
+    if (g_msSndMine < 0) g_msSndMine = Audio_LoadWaveFile("B09.WAV");
+    Log_Print("MISSION: itens no chart: mina %d, velocidade %d, 3X %d, 4X %d, 8X %d (sprites %d %d %d %d %d)\n",
+              n[0], n[1], n[2], n[3], n[4],
+              g_msItemSpr[0], g_msItemSpr[1], g_msItemSpr[2], g_msItemSpr[3], g_msItemSpr[4]);
+}
+
+static float g_scrollSpeedTarget[2];   /* definido mais acima; usado pelos itens */
+
+/* item pisado */
+static void msItemCollect(int p, uint8_t v)
+{
+    switch (v) {
+    case 0x19: {   /* mina */
+        int* life = &g_game.stats.life[p];
+        int lvl = g_game.optionDifficulty < 0 ? 0 : (g_game.optionDifficulty > 2 ? 2 : g_game.optionDifficulty);
+        if (*life > 1000) *life = 1000;
+        *life -= 500;
+        if (*life < 0) *life = 0;
+        g_game.stats.lifeSpeed[p] += LIFE_SPEED_PENALTY;
+        if (g_game.stats.lifeSpeed[p] < k_lifeSpeedMin[lvl]) g_game.stats.lifeSpeed[p] = k_lifeSpeedMin[lvl];
+        g_msMines[p]++;
+        if (g_msSndMine >= 0) Audio_Play(g_msSndMine, false);
+        g_msWhite[p] = 50;   /* NX 0x807121f: +0x4ec = 0x32 */
+        break;
+    }
+    case 0x1e: g_scrollSpeedTarget[p] = 2.0f; break;
+    case 0x20: g_scrollSpeedTarget[p] = 3.0f; break;
+    case 0x21: g_scrollSpeedTarget[p] = 4.0f; break;
+    case 0x22: g_scrollSpeedTarget[p] = 8.0f; break;
+    default: break;
+    }
+    Log_Print("MISSION: item 0x%02X pisado (P%d)\n", v, p + 1);
+}
+
 static uint16_t* g_zHit[2];     /* painéis pisados (marcados) por linha */
 static uint8_t*  g_zDone[2];    /* linha resolvida */
 static int8_t*   g_zRowJ[2];    /* pior julgamento da linha até agora */
@@ -1493,8 +1626,16 @@ static void zeroJudge(int p)
              * janela errada (escala do Exceed); com a janela fixa em tempo
              * (judgeWindows) a regra original volta a valer:
              * era (correção provisória): downB[pan] && diff >= 0.0 && diff < hwL[1] && ... */
-            bool holdHit = downB[pan] && evaluateTiming(diff) == JT_PERFECT &&
-                           (v == NT_HOLD_B || v == NT_HOLD_T || (v == NT_HOLD_H && diff >= 0.0));
+            /* Pedido do usuário: long como no código-fonte do Exceed 1 (playengine.cpp,
+             * JudgeStep): com o botão SEGURADO, qualquer parte do long (começo, meio ou
+             * fim) vale como pisada assim que a linha chega à step zone (m_Y <= 0), e
+             * continua valendo enquanto a linha não virar MISS (BAD_ZONE_U). Julgada em
+             * qualquer zona, a parte de long é sempre PERFECT.
+             * era (leitura do piu do Zero, 0x0808cxxx): só dentro da zona de PERFECT,
+             *   downB[pan] && evaluateTiming(diff) == JT_PERFECT &&
+             *   (v == NT_HOLD_B || v == NT_HOLD_T || (v == NT_HOLD_H && diff >= 0.0)) */
+            bool holdHit = downB[pan] && diff >= 0.0 && diff < badL &&
+                           (v == NT_HOLD_H || v == NT_HOLD_B || v == NT_HOLD_T);
             /* O long é consumido em ordem: corpo/cauda só depois da parte anterior do
              * mesmo painel (pega = apagada, ou perdida = marcada). Sem isso, com longs
              * curtos o corpo e a cauda entravam na janela antes da cabeça; a cabeça
@@ -1565,6 +1706,22 @@ static void zeroJudge(int p)
         if (missed) applyRowJudgment(p, JT_MISS);
         else if (g_zRowJ[p][ri]) applyRowJudgment(p, (JudgeType)g_zRowJ[p][ri]);
         g_zDone[p][ri] = 1;
+    }
+    /* MISSION: itens pisados com a linha dentro da janela (como na NX, 0x8070569) */
+    if (g_msItem) {
+        for (int ri = g_zFirst[p] > 8 ? g_zFirst[p] - 8 : 0; ri < g_zRows; ri++) {
+            double diff = g_songTime - getRowTime(ri);
+            if (diff < -badE) break;
+            if (diff > badL) continue;
+            for (int pan = 0; pan < panCount; pan++) {
+                int col = dn ? pan : pan + (p ? 5 : 0);
+                uint8_t s = g_msItem[ri * 10 + col];
+                if (!s || !hitB[pan]) continue;
+                msItemCollect(p, s);
+                g_msItem[ri * 10 + col] = 0;
+                zeroExplode(p, pan, ri);
+            }
+        }
     }
     #undef ZJ_V
     #undef ZJ_CLR
@@ -2359,6 +2516,7 @@ void Gameplay_Start(int songId)
         if (rsP1 || rsP2)
             Step_ApplyRandomShuffle(g_chart, chartMode, rsP1, rsP2);
     }
+    msItemsExtract();   /* MISSION: itens fora da grade antes do julgamento */
 
     /* g_hasAudio nunca era atribuida (sempre false): o fim por "musica acabou"
      * nao rodava e o jogo esperava o chart inteiro (ex.: 815 = 148 s de chart,
@@ -3291,6 +3449,13 @@ void Gameplay_Render(void)
         }
         */
 
+        /* Mina pisada: quadro branco 640x480 com alfa n/50, antes do campo do jogador,
+         * caindo 1 por quadro (NX 0x806cf89..0x806d228). */
+        if (g_msWhite[p] > 0) {
+            Render_Rect(0.0f, 0.0f, 640.0f, 480.0f, 255, 255, 255, (uint8_t)(g_msWhite[p] * 255 / 50));
+            if (g_renderTick) g_msWhite[p]--;
+            glColor4f(1, 1, 1, 1);
+        }
         // 01.SPR receptor (g_fontSpr01) — renderiza ANTES das notas (abaixo delas)
         // Freedom: oculta o receptor completamente (sprites não são desenhados)
         // Para single (não HD/DN): srcX baked para P1-solo (base=38). Offset por player.
@@ -3428,6 +3593,7 @@ void Gameplay_Render(void)
          *     (0x809e0d0: fração = distância / 64);
          *   cabeça skinN_l1 por cima (Pass 2 / exHeldHead). Segurado: a cabeça
          *     fica no receptor e o corpo sai dele. */
+        s_holdVanishRef = g_game.cmdVanish[p] ? (float)(receptorY + rh2 / 2) : -1.0f;
         if (g_zeroSkinArrows && !isHalfDouble && !g_game.cmdNonStep[p]) {
             #define Z_PV(r, pn) (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[r], pn)                                                     : getPanelValue(&g_chart->rows[r], pn, p))
             #define Z_ROWY(r) ((float)(receptorY + rh2 / 2) +                 (((r) < g_visualRowCount && g_visualRow) ? (float)g_visualRow[r] : (float)(r)) * pPixelsPerRow                 - visualScrollRow * pPixelsPerRow)
@@ -3596,8 +3762,8 @@ void Gameplay_Render(void)
                             /* Thresholds derivados do PUMPY.EXE (Ghidra):
                              * _DAT_004349ac=196, _DAT_00434934=256, ref=316
                              * → fade zone 62%-81% da área de play a partir do receptor */
-                            float fade = ((y1 + totalH / 2.0f) - 122.0f) / 84.0f;
-                            bodyAlpha = fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade);
+                            /* era: fade = ((y1 + totalH / 2.0f) - 122.0f) / 84.0f */
+                            bodyAlpha = vanishAlpha((y1 + totalH / 2.0f) - (float)(receptorY + rh2 / 2));
                         }
                         float cx = posX[panel] + sw / 2.0f + offX;
                         /* Estica apenas a faixa CENTRAL do UV do sprite (25%-75% vertical).
@@ -3718,8 +3884,8 @@ void Gameplay_Render(void)
                 }
                 float tailAlpha = 1.0f;
                 if (g_game.cmdVanish[p]) {
-                    float fade = (y - 122.0f) / 84.0f;
-                    tailAlpha = fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade);
+                    /* era: fade = (y - 122.0f) / 84.0f */
+                    tailAlpha = vanishAlpha(y - (float)(receptorY + rh2 / 2));
                 }
                 /* X-MODE: a ponta sai na mesma chamada do corpo, com o X da
                  * cabeça do hold (volta até o NT_HOLD_H do mesmo painel). */
@@ -3769,6 +3935,23 @@ void Gameplay_Render(void)
                     uint8_t sv = g_divSpec[p][ri * 5 + panel];
                     if (sv == NT_DIV_W || sv == NT_DIV_G) val = sv;   /* A (4) nao desenha */
                 }
+                if (g_msItem && !val && !isHalfDouble) {   /* MISSION: item no lugar da seta */
+                    int icol = isDoubleOrNightmare ? panel : panel + (p ? 5 : 0);
+                    int it = msItemIndex(g_msItem[ri * 10 + icol]);
+                    if (it >= 0 && g_msItemSpr[it] >= 0) {
+                        int tile = g_msItemSpr[it];
+                        int icnt = sprTileCount(tile);
+                        if (icnt > 1) tile += arrowAnimFrame() % icnt;
+                        float isw = (float)g_game.sprTiles[tile].srcW, ish = (float)g_game.sprTiles[tile].srcH;
+                        int ab = (arrowIdx >= 0 && arrowIdx < 5) ? arrowIdx : 0;
+                        int as = (ab == 0) ? g_fontArrow542 : (ab == 1) ? g_fontArrow541 : (ab == 2) ? g_fontArrow545 :
+                                 (ab == 3) ? g_fontArrow543 : g_fontArrow544;
+                        float aw = as >= 0 ? (float)g_game.sprTiles[as].srcW : (float)PANEL_SIZE;
+                        float ia = g_game.cmdVanish[p] ? vanishAlpha(y - (float)(receptorY + rh2 / 2)) : 1.0f;
+                        Sprite_DrawTileUV(tile, posX[panel] + aw / 2.0f + XM_DXP(panel, y), y, isw, ish, ia);
+                    }
+                    if (it >= 0) continue;
+                }
                 if (!val || val == NT_HOLD_B || val == NT_HOLD_T) continue;
 
                 // HD: pos 0=CN(545), 1=UR(543), 2=DR(544), 3=DL(542), 4=UL(541), 5=CN(545)
@@ -3798,8 +3981,8 @@ void Gameplay_Render(void)
                     float sh = (float)g_game.sprTiles[aidx].srcH;
                     float noteAlpha = 1.0f;
                     if (g_game.cmdVanish[p]) {
-                        float fade = (y - 122.0f) / 84.0f;
-                        noteAlpha = fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade);
+                        /* era: fade = (y - 122.0f) / 84.0f */
+                        noteAlpha = vanishAlpha(y - (float)(receptorY + rh2 / 2));
                     }
                     /* Exceed2: nota/cabeça do hold pela skin (skinN / skinN_l1),
                      * centrada onde ficava a seta do ARROW54X + ajuste da skin */
