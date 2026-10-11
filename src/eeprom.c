@@ -95,8 +95,98 @@ static void eepDefaults(void) {
     eepStamp();
 }
 
-static void eepPath(char* out, size_t n) {
-    snprintf(out, n, "%s/pumpprex3.ini", g_game.currentDirectory);
+/* era: static void eepPath(...) -> "%s/pumpprex3.ini" (arquivo próprio desta imagem).
+ * Pedido do usuário: um arquivo só, PIUZERO.INI, no lugar de pumpprex3.ini e
+ * PIUEXCEED2.INI. Ver SaveFile_Read / SaveFile_Write abaixo. */
+
+/* ---------------------------------------------------------------------------
+ * PIUZERO.INI do port: um contêiner com as duas imagens de 2048 bytes.
+ *   +0x00  "PIUZRCMP"            magia (8 bytes)
+ *   +0x08  u32 versão (1)
+ *   +0x0C  u32 seções presentes  (bit 0 = seção 0, bit 1 = seção 1)
+ *   +0x10  seção 0: SETUP / bookkeeping (eeprom.c, layout do PUMPY.EXE)
+ *   +0x810 seção 1: ranking / contagens (eeprom_x2.c, layout do PIU32.EXE)
+ * NÃO é o formato do PIUZERO.INI do piu original (o objeto de 0x1010 bytes de
+ * 0x08059d10), que o projeto ainda não implementa: só o nome é o mesmo. Um
+ * PIUZERO.INI sem a magia (ex.: o do jogo original) é guardado como
+ * PIUZERO.INI.orig antes da primeira gravação, nunca sobrescrito.
+ * Migração: seção ausente é lida do arquivo antigo (pumpprex3.ini /
+ * PIUEXCEED2.INI), se existir; os arquivos antigos não são apagados.
+ * ------------------------------------------------------------------------- */
+#define SAVEFILE_NAME    "PIUZERO.INI"
+#define SAVEFILE_MAGIC   "PIUZRCMP"
+#define SAVEFILE_HDR     16
+#define SAVEFILE_SECTION 2048
+#define SAVEFILE_TOTAL   (SAVEFILE_HDR + 2 * SAVEFILE_SECTION)
+
+static const char* const k_saveLegacy[2] = { "pumpprex3.ini", "PIUEXCEED2.INI" };
+
+/* Lê o contêiner inteiro. false = ausente ou sem a magia (*foreign = existe, mas não é nosso). */
+static bool saveFileLoad(uint8_t* img, bool* foreign) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s/%s", g_game.currentDirectory, SAVEFILE_NAME);
+    if (foreign) *foreign = false;
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    size_t got = fread(img, 1, SAVEFILE_TOTAL, f);
+    fclose(f);
+    if (got == SAVEFILE_TOTAL && memcmp(img, SAVEFILE_MAGIC, 8) == 0) return true;
+    if (foreign) *foreign = true;
+    return false;
+}
+
+/* Seção idx (0 ou 1) -> buf (2048 bytes). false = não há dado salvo (use os padrões). */
+bool SaveFile_Read(int idx, uint8_t* buf) {
+    uint8_t img[SAVEFILE_TOTAL];
+    if (idx < 0 || idx > 1) return false;
+    if (saveFileLoad(img, NULL) && (img[0x0C] & (1u << idx))) {
+        memcpy(buf, img + SAVEFILE_HDR + idx * SAVEFILE_SECTION, SAVEFILE_SECTION);
+        return true;
+    }
+    /* migração: arquivo antigo desta seção */
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s/%s", g_game.currentDirectory, k_saveLegacy[idx]);
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    size_t got = fread(buf, 1, SAVEFILE_SECTION, f);
+    fclose(f);
+    if (got != SAVEFILE_SECTION) return false;
+    Log_Print("SAVE: secao %d importada de '%s' (passa a ficar em %s)\n", idx, k_saveLegacy[idx], SAVEFILE_NAME);
+    SaveFile_Write(idx, buf);
+    return true;
+}
+
+/* buf (2048 bytes) -> seção idx; a outra seção é preservada. */
+bool SaveFile_Write(int idx, const uint8_t* buf) {
+    uint8_t img[SAVEFILE_TOTAL];
+    char path[MAX_PATH];
+    bool foreign = false;
+    if (idx < 0 || idx > 1) return false;
+    snprintf(path, sizeof(path), "%s/%s", g_game.currentDirectory, SAVEFILE_NAME);
+    if (!saveFileLoad(img, &foreign)) {
+        if (foreign) {   /* não é nosso: guarda antes de criar o do port */
+            char bak[MAX_PATH];
+            snprintf(bak, sizeof(bak), "%s.orig", path);
+            if (rename(path, bak) != 0) {
+                Log_Print("SAVE: '%s' nao e do port e nao foi possivel renomear; nada gravado\n", path);
+                return false;
+            }
+            Log_Print("SAVE: '%s' nao e do port; guardado como '%s'\n", path, bak);
+        }
+        memset(img, 0, sizeof(img));
+        memcpy(img, SAVEFILE_MAGIC, 8);
+        img[0x08] = 1;
+    }
+    memcpy(img + SAVEFILE_HDR + idx * SAVEFILE_SECTION, buf, SAVEFILE_SECTION);
+    img[0x0C] |= (uint8_t)(1u << idx);
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        Log_Print("SAVE: cannot write '%s'\n", path);
+        return false;
+    }
+    fwrite(img, 1, sizeof(img), f);
+    fclose(f);
+    return true;
 }
 
 static void eepToGame(void) {
@@ -132,36 +222,25 @@ static void eepFromGame(void) {
 
 /* Grava a imagem (PUMPY.EXE 0x405190). */
 void Eeprom_Save(void) {
-    char path[MAX_PATH];
     eepFromGame();
-    eepPath(path, sizeof(path));
-    FILE* f = fopen(path, "wb");
-    if (!f) {
-        Log_Print("EEPROM: cannot write '%s'\n", path);
-        return;
-    }
-    fwrite(g_eep, 1, sizeof(g_eep), f);
-    fclose(f);
+    /* era: fopen("pumpprex3.ini", "wb") + fwrite(g_eep) */
+    SaveFile_Write(0, g_eep);
 }
 
 /* Lê e valida a imagem (PUMPY.EXE 0x4067a0) e aplica em g_game.
  * Retorno: 1 = arquivo válido; 0 = arquivo inválido (resetado, com o aviso do original);
  *          -1 = arquivo ausente (defaults em g_game; quem chamou decide migrar/gravar). */
 int Eeprom_Load(void) {
-    char path[MAX_PATH];
-    eepPath(path, sizeof(path));
-    Log_Print("EEPROM: loading %s\n", path);
+    Log_Print("EEPROM: loading %s (secao 0)\n", SAVEFILE_NAME);
 
-    FILE* f = fopen(path, "rb");
-    if (!f) {
+    /* era: fopen("pumpprex3.ini", "rb") + fread(g_eep) */
+    if (!SaveFile_Read(0, g_eep)) {
         eepDefaults();
         eepToGame();
         return -1;
     }
-    size_t got = fread(g_eep, 1, sizeof(g_eep), f);
-    fclose(f);
 
-    if (got != sizeof(g_eep) || eepGet32(EEP_IDENT) != EEP_IDENT_VAL) {
+    if (eepGet32(EEP_IDENT) != EEP_IDENT_VAL) {
         Log_Print("Warning - ident mismatch\n");
         eepDefaults();
         eepToGame();

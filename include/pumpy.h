@@ -806,6 +806,10 @@ void GameOption_Load(void);
 /* eeprom.c — imagem de 2048 bytes no formato do PUMPY.EXE (pumpprex3.ini) */
 int  Eeprom_Load(void);   /* 1=ok, 0=inválido (resetado), -1=ausente */
 void Eeprom_Save(void);   /* lê PUMPY.INI; chama-se na inicialização do jogo */
+/* eeprom.c — PIUZERO.INI do port: contêiner com as duas imagens de 2048 bytes
+ * (seção 0 = eeprom.c, seção 1 = eeprom_x2.c). Substitui pumpprex3.ini e PIUEXCEED2.INI. */
+bool SaveFile_Read(int idx, uint8_t* buf);
+bool SaveFile_Write(int idx, const uint8_t* buf);
 void GameOption_Save(void);   /* escreve PUMPY.INI; chama-se em cada alteração */
 
 void Render_Clear(uint8_t r, uint8_t g, uint8_t b);

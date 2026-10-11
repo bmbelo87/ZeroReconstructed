@@ -83,12 +83,9 @@ static void x2eDefaults(void) {
 void Eeprom2_Save(void) {                                /* 0x422190 */
     put32(X2E_IDENT, X2E_IDENT_VAL);
     put32(X2E_CHKSUM, adler32(&g_x2e[X2E_SETTINGS], 8));
-    char path[MAX_PATH];
-    x2ePath(path, sizeof(path));
-    FILE* f = fopen(path, "wb");
-    if (!f) { Log_Print("EEPROM2: não foi possível gravar '%s'\n", path); return; }
-    fwrite(g_x2e, 1, X2E_SIZE, f);
-    fclose(f);
+    /* era: fopen("PIUEXCEED2.INI", "wb") + fwrite(g_x2e). Agora é a seção 1 do
+     * PIUZERO.INI (eeprom.c, SaveFile_Write). */
+    SaveFile_Write(1, g_x2e);
 }
 
 /* 0x422060 */
@@ -96,13 +93,10 @@ void Eeprom2_Load(void) {
     if (g_x2eLoaded) return;
     g_x2eLoaded = true;
     bool dirty = false;
-    char path[MAX_PATH];
-    x2ePath(path, sizeof(path));
-    FILE* f = fopen(path, "rb");
-    if (f && fread(g_x2e, 1, X2E_SIZE, f) == X2E_SIZE) {
-        fclose(f);
-    } else {
-        if (f) fclose(f);
+    /* era: fopen("PIUEXCEED2.INI", "rb") + fread(g_x2e). Agora é a seção 1 do
+     * PIUZERO.INI (eeprom.c, SaveFile_Read; importa o arquivo antigo se existir). */
+    static const char path[] = "PIUZERO.INI (secao 1)";
+    if (!SaveFile_Read(1, g_x2e)) {
         x2eDefaults();
         dirty = true;
     }
