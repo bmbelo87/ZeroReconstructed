@@ -195,9 +195,9 @@ target_include_directories(Pumpy PRIVATE include)
 # Para abrir a próxima série (ex.: 0.3): RECOMP_MAJOR_MINOR "0.3", RECOMP_PATCH_BASE -1 e
 # RECOMP_BASE_COMMIT = último commit da série anterior; o commit dessa troca vira o .0
 # (ver tools/recomp_version.cmake).
-set(RECOMP_MAJOR_MINOR "0.2")
-set(RECOMP_PATCH_BASE 0)
-set(RECOMP_BASE_COMMIT "c36b708")
+set(RECOMP_MAJOR_MINOR "0.3")
+set(RECOMP_PATCH_BASE -1)
+set(RECOMP_BASE_COMMIT "490dede")
 set(RECOMP_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 add_custom_target(recomp_version ALL
     COMMAND ${CMAKE_COMMAND}
