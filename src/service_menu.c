@@ -245,14 +245,19 @@ static void svcRenderEEPROMOverlay(void)
 /* -------------------------------------- ServiceMenu_RenderFooter 0x004051e0 */
 static void svcRenderFooter(void)
 {
-    char buf[64];
     svcColor(SVC_NORMAL);
 
-    sprintf(buf, "PUMP IT UP (PREX 3 / %d)", 3);
-    svcText(0.0f, 16.0f, buf);
-    svcText(0.0f,  0.0f, "1999-2003 ANDAMIRO CO., LTD.");
-    /* Extra do port: versão do projeto (cada commit soma 1), como na NX. */
-    svcText(0.0f, 32.0f, "(BUILD:RECOMP-" RECOMP_VERSION ")");
+    /* era (Prex3): "PUMP IT UP (PREX 3 / 3)" em (0,16) e "1999-2003 ANDAMIRO CO., LTD." em (0,0):
+     *     char buf[64];
+     *     sprintf(buf, "PUMP IT UP (PREX 3 / %d)", 3);
+     *     svcText(0.0f, 16.0f, buf);
+     *     svcText(0.0f,  0.0f, "1999-2003 ANDAMIRO CO., LTD.");
+     * Zero (piu 0x08063850): três linhas em x = 48 (Y para cima), em 64, 48 e 32. */
+    svcText(48.0f, 64.0f, "PUMP IT UP: ZERO");
+    svcText(48.0f, 48.0f, "(C) 1999-2006 ANDAMIRO CO., LTD.");
+    /* era: svcText(48.0f, 32.0f, "(BUILD:1.03)");  (build do piu original)
+     * Pedido do usuário: mostra a versão do projeto, "RECOMP-<versão>", como na NX. */
+    svcText(48.0f, 32.0f, "(BUILD:RECOMP-" RECOMP_VERSION ")");
 
     switch (g_svcPage) {
     case 0: case 4: case 5: case 6: case 7: case 10: case SVC_PAGE_GRAPHICS: case SVC_PAGE_BUTTON_CONFIG:
