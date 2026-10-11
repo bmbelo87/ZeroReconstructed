@@ -635,6 +635,7 @@ static void drawWheel(int spin, int idxOff, float px, float py) {
  * Begin (0x806a7a0)
  * ------------------------------------------------------------------------- */
 void ZeroSelect_Enter(void) {
+    if (ZeroEz_Active()) { ZeroEz_Enter(); return; }   /* EASY STATION: CSelectEz */
     initUnlocks();
     Title_StopMusic();
     Movie_Close();
@@ -913,6 +914,7 @@ static void playerInput(int p) {
 }
 
 void ZeroSelect_Update(float dt) {
+    if (ZeroEz_Active()) { ZeroEz_Update(dt); return; }
     if (s_started) return;
     s_frame++;
 
@@ -959,6 +961,7 @@ void ZeroSelect_Update(float dt) {
 }
 
 void ZeroSelect_Render(void) {
+    if (ZeroEz_Active()) { ZeroEz_Render(); return; }
     if (g_game.bgaPicCount < 4) return;
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

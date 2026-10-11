@@ -254,6 +254,7 @@ typedef struct {
     int type;
     int blendMode;
     int z_order;
+    int mask;   /* BGA3 +4 (Zero 0x80a0860): >= 4 = máscara de estêncil para as (mask - 3) camadas seguintes */
 } BGAKeyframe;
 
 typedef struct {
@@ -738,6 +739,16 @@ void Zero_SetSkinIndex(int n);       /* console /skin */           /* zero_selec
 void ZeroSelect_Enter(void);          /* zero_select.c — CSelect do Zero */
 void ZeroSelect_Update(float dt);
 void ZeroSelect_Render(void);
+/* zero_selectez.c — CSelectEz do Zero (EASY STATION) */
+void ZeroEz_SetActive(bool on);
+bool ZeroEz_Active(void);
+void ZeroEz_Enter(void);
+void ZeroEz_Update(float dt);
+void ZeroEz_Render(void);
+int  ZeroEz_SongCount(void);
+int  ZeroEz_SongId(int i);
+int  ZeroEz_SongLevel(int i);
+bool ExSelect_StartZeroEz(int id, int level, unsigned joined, int speed);
 int Song_BaseId(int id);            /* Zero +0x08 (0x805a460), -1 = sem base */
 bool Song_FindFile(int id, const char* fmt, bool hex3, char* out, size_t outSize); /* id, depois base */
 const char* Song_DataIdStr(int id);

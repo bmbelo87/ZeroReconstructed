@@ -74,6 +74,7 @@ static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum, float* outA
     /* blendMode vem do keyframe A (inicio do segmento atual) — igual ao original:
        BGA_RenderLayer usa *(short*)(pfVar1 - 4) onde pfVar1 aponta para B, logo A+0x30 */
     result.blendMode = layer->keyframes[segIdx].blendMode;
+    result.mask = layer->keyframes[segIdx].mask;
 
     if (a->type == 0) result.a = 0;
     else if (b->type == 0 && t >= 1.0f) result.a = 0;
@@ -514,8 +515,19 @@ static float s_picA[MAX_BGA_PICS];
 static bool  s_picColorSet[MAX_BGA_PICS];
 static float s_slotRGB[3] = { 1.0f, 1.0f, 1.0f }, s_slotA = 1.0f;
 
+/* Zero (piu 0x80a0860 / 0x80a8a40 / 0x80a8ae0 / 0x80a8b60): camada-máscara.
+ * Keyframe com o campo +4 > 3: a camada NÃO aparece; ela grava o seu formato
+ * (alfa > 0,5) no estêncil e as camadas seguintes só desenham dentro dele.
+ * O laço dos 100 slots (0x80a0f..) decrementa [+0x1a4] depois de cada slot e
+ * desliga o estêncil quando chega a 0; a máscara grava ali (campo - 2), então
+ * campo 4 = recorta 1 camada. Só vale dentro do BGA_DrawFrame.
+ * (SELECTEZ.DAT: setas laterais = máscara 'ars'/'arm' + preenchimento 'parang'.) */
+static int  s_maskLeft;       /* [+0x1a4] */
+static bool s_maskFrame;      /* dentro do laço do BGA_DrawFrame */
+
 static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion, float animT) {
     if (!state || state->type == 0 || state->a <= 0.01f) return;
+    bool isMask = (picVersion == 3 && s_maskFrame && state->mask > 3);
 
     /* Exceed2 BGA3 (PIU32.EXE 0x41e963 + ramo [obj]==3 em 0x41ea4b): o pivô de
      * rotação/escala é (x, y) e a imagem fica em x - hot - w/2 (hot += w*0.5).
@@ -547,6 +559,16 @@ static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion, 
     }
     float alpha = state->a * s_slotA;
     float renderR = state->r * s_slotRGB[0], renderG = state->g * s_slotRGB[1], renderB = state->b * s_slotRGB[2];
+
+    if (isMask) {                                   /* 0x80a8a40 */
+        glClear(GL_STENCIL_BUFFER_BIT);
+        glEnable(GL_STENCIL_TEST);
+        glStencilFunc(GL_ALWAYS, 1, 1);
+        glStencilOp(GL_REPLACE, GL_REPLACE, GL_REPLACE);
+        glEnable(GL_ALPHA_TEST);
+        glAlphaFunc(GL_GREATER, 0.5f);
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    }
 
     glEnable(GL_BLEND);
     /* FUN_00401450 no original: 5 modos de blend
@@ -661,6 +683,13 @@ static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion, 
         glEnd();
         glPopMatrix();
         glColor4f(1, 1, 1, 1);
+    }
+    if (isMask) {                                   /* 0x80a8ae0 */
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDisable(GL_ALPHA_TEST);
+        glStencilFunc(GL_EQUAL, 1, 1);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        s_maskLeft = state->mask - 2;
     }
 }
 
@@ -778,8 +807,16 @@ static BGAScene* bga_findScene(int bgaIndex, const char* name) {
 void BGA_DrawFrame(int bgaIndex, int frame) {
     if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
     if (frame < 0) frame = 0;
-    for (int slot = 0; slot < 100 && slot < MAX_BGA_LAYERS; slot++)
+    /* era: for (...) BGA_DrawSlot(bgaIndex, frame, slot);
+     * Agora com o contador da máscara de estêncil (ver renderOneLayer). */
+    s_maskLeft = 0;
+    s_maskFrame = true;
+    for (int slot = 0; slot < 100 && slot < MAX_BGA_LAYERS; slot++) {
         BGA_DrawSlot(bgaIndex, frame, slot);
+        if (s_maskLeft != 0 && --s_maskLeft == 0) glDisable(GL_STENCIL_TEST);   /* 0x80a8b60 */
+    }
+    if (s_maskLeft != 0) { glDisable(GL_STENCIL_TEST); s_maskLeft = 0; }
+    s_maskFrame = false;
 }
 
 /* 0x41f0f0(nome, desenha): desenha no quadro atual e avança.
@@ -840,6 +877,12 @@ int BGA_SceneOffset(int bgaIndex, const char* name) {
 void BGA_SceneSetOffset(int bgaIndex, const char* name, int n) {
     BGAScene* sc = bga_findScene(bgaIndex, name);
     if (sc) sc->cur = sc->start + n;
+}
+
+/* Zero 0x80a18f0: quantidade de quadros da cena (0 se não houver) */
+int BGA_SceneLength(int bgaIndex, const char* name) {
+    BGAScene* sc = bga_findScene(bgaIndex, name);
+    return sc ? sc->end - sc->start : 0;
 }
 
 int BGA_SceneFrame(int bgaIndex, const char* name) {

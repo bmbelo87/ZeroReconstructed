@@ -25,8 +25,8 @@
  * EFF_MISSION_STATION T2_04, EFF_EASY_STATION T2_05, EFF_STATION_OUT SELECTED,
  * EFF_TIME_LIMIT TIME_LIMIT.
  *
- * EASY (CSelectEz) e MISSION (CSelectMission) ainda não existem no projeto:
- * por enquanto seguem para a Select do ARCADE.
+ * EASY vai para a CSelectEz (zero_selectez.c). MISSION (CSelectMission) ainda não
+ * existe no projeto: por enquanto segue para a Select do ARCADE.
  */
 #include "pumpy.h"
 #include "bga.h"
@@ -280,9 +280,14 @@ void Station_Update(float dt) {
              * EASY / MISSION: telas ainda não feitas -> ARCADE */
             if (g_sel == ST_REMIX) ExSelect_SetStation(1, 3);
             else                   ExSelect_SetStation(0, 0);
-            if (g_sel == ST_EASY || g_sel == ST_MISSION)
-                Log_Print("STATION: %s ainda não existe, indo para o ARCADE\n",
-                          g_sel == ST_EASY ? "EASY STATION" : "MISSION STATION");
+            /* era: EASY e MISSION caíam no ARCADE:
+             *     if (g_sel == ST_EASY || g_sel == ST_MISSION) Log_Print("STATION: %s ainda não existe...")
+             * EASY agora vai para a "SELECTEZ" (zero_selectez.c); MISSION continua sem tela. */
+            /* a skin escolhida na EASY não acompanha o jogador para outra estação */
+            if (ZeroEz_Active() && g_sel != ST_EASY) Zero_SetSkinIndex(0);
+            ZeroEz_SetActive(g_sel == ST_EASY);
+            if (g_sel == ST_MISSION)
+                Log_Print("STATION: MISSION STATION ainda não existe, indo para o ARCADE\n");
             Movie_Close();
             BGM_Stop();
             Title_StopMusic();

@@ -179,6 +179,17 @@ void ExSelect_BuildSongDB(SongDB* db) {
             md->songCount++;
         }
     }
+    /* Zero EASY STATION: "RUN %X -p" = chart PRACTICE (seção 0 do .STX), com a
+     * lista fixa e o nível 1..3 da CSelectEz (zero_selectez.c, 0x0811cb40). */
+    {
+        SongMode* md = &db->modes[db->modeCount++];
+        strncpy(md->name, "PRACTICE", sizeof(md->name) - 1);
+        for (int i = 0; i < ZeroEz_SongCount() && md->songCount < MAX_SONGS_PER_MODE; i++) {
+            md->songIds[md->songCount] = ZeroEz_SongId(i);
+            md->difficulties[md->songCount] = ZeroEz_SongLevel(i);
+            md->songCount++;
+        }
+    }
     Log_Print("EXSELECT: songDB sintético: %d músicas, %d modos\n", db->songCount, db->modeCount);
 }
 
@@ -833,6 +844,38 @@ bool ExSelect_StartZero(int id, int diff, int diffP2, unsigned joined, const int
         g_game.cmdSpeedMult[p] = speed[p] > 0 ? speed[p] : 1;
         g_game.cmdRandomVelocity[p] = rv[p];
     }
+    g_exDemo = false;
+    Loading_Enter(id);
+    return true;
+}
+
+/* Zero CSelectEz (piu 0x8075750): "RUN %X -p". Os dois lados jogam o chart
+ * PRACTICE com a mesma velocidade; os demais comandos ficam desligados (a
+ * CSelectEz não tem códigos e só mexe no grupo de velocidade). */
+bool ExSelect_StartZeroEz(int id, int level, unsigned joined, int speed)
+{
+    g_game.selectedSongIndex = Song_FindByID(&g_game.songDB, id);
+    g_game.selectedModeIndex = Song_FindMode(&g_game.songDB, "PRACTICE");
+    if (g_game.selectedSongIndex < 0 || g_game.selectedModeIndex < 0) {
+        Log_Print("ZSELECTEZ: songDB sem a música/modo (%d/%d)\n",
+                  g_game.selectedSongIndex, g_game.selectedModeIndex);
+        return false;
+    }
+    g_game.selectedDifficulty = level;
+    g_game.activePlayerMask = (int)(joined & 3);
+    g_game.selectedModeIndexP2 = -1;
+    g_game.isBattleMode = false;
+    for (int p = 0; p < 2; p++) {
+        g_game.cmdSpeedMult[p]      = speed > 0 ? speed : 1;
+        g_game.cmdRandomVelocity[p] = false;
+        g_game.cmdMirror[p]         = false;
+        g_game.cmdRandomStep[p]     = false;
+        g_game.cmdVanish[p]         = false;
+        g_game.cmdNonStep[p]        = false;
+        g_game.cmdEarthworm[p]      = false;
+        g_game.cmdFreedom[p]        = false;
+    }
+    ExSelect_SetXMode(false);
     g_exDemo = false;
     Loading_Enter(id);
     return true;

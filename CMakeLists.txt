@@ -158,6 +158,7 @@ add_executable(Pumpy
     # src/exceed2_songs.c   # Exceed2 — desativado
     src/zero_songs.c
     src/zero_select.c
+    src/zero_selectez.c
     src/service_menu.c
     src/coin.c
     src/debug_console.c

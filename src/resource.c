@@ -722,6 +722,7 @@ static void bga3_emit(BGALayer* layer, const uint8_t* r, int frameAdd) {
     kf->b = *(const float*)(r + 0x34);
     kf->a = *(const float*)(r + 0x38);
     kf->z_order = 0;
+    kf->mask = (int)*(const int16_t*)(r + 4);
 }
 
 static bool parseBGA3(const uint8_t* d, uint32_t size, BGAPicture* bga) {
