@@ -1,0 +1,15 @@
+{
+  "game": "Pump It Up: Zero",
+  "system": "Arcade",
+  "type": "decomp",
+  "status": "in-progress",
+  "targets": ["Windows", "Linux"],
+  "toolchain": ["Ghidra", "SDL2", "OpenGL"],
+  "project": "ZeroReconstructed",
+  "approach": "Faithful C reconstruction of the Linux arcade executable piu (ELF i386), no emulation, native SDL2 + OpenGL.",
+  "notes": "Asset decryption, Station/Song select, gameplay with skins, Dance Grade, Stage Break and service menu work. EASY/MISSION stations, Zero-style result screens and most gameplay modifiers are still missing.",
+  "help": ["EASY and MISSION stations", "Gameplay modifiers"],
+  "tags": ["rhythm", "dance", "andamiro", "pump-it-up"],
+  "maintainers": [{ "name": "bmbelo87", "link": "https://github.com/bmbelo87" }],
+  "links": [{ "label": "Releases", "url": "https://github.com/bmbelo87/decomp-it-up-Zero/releases" }]
+}
